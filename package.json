@@ -1,16 +1,20 @@
 {
-  "name": "teams-edge-auth-poc",
+  "name": "teams-cli",
   "version": "0.1.0",
   "private": true,
+  "description": "A minimal CLI for a persistent Microsoft Teams session",
   "type": "module",
+  "bin": {
+    "teams-cli": "dist/src/cli.js"
+  },
   "scripts": {
     "dev": "tsx src/cli.ts",
-    "auth": "tsx src/cli.ts auth",
-    "list": "tsx src/cli.ts list",
+    "build": "tsc",
     "check": "tsc --noEmit",
     "test": "node --import tsx --test test/**/*.test.ts"
   },
   "dependencies": {
+    "commander": "^14.0.3",
     "playwright-core": "^1.54.2"
   },
   "devDependencies": {

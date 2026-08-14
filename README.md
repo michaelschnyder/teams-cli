@@ -1,62 +1,120 @@
-# Teams Edge authentication proof of concept
+# Teams CLI
 
-This TypeScript tool launches Microsoft Edge with a dedicated persistent profile,
-runs the first-party Teams OAuth login, captures the initial Skype-resource access
-token from the callback **in memory**, and performs the Teams `authsvc` exchange in
-TypeScript. It prints token metadata and discovered service endpoints, never token
-values.
+A minimal TypeScript CLI that signs in through Microsoft Edge or Google Chrome,
+persists a Microsoft Teams session, and validates it from later command-line runs.
 
 This uses undocumented Teams behavior and Microsoft's first-party client identity.
 It is unsupported, may be blocked by tenant policy, and may stop working without
 notice. Obtain approval from your organization before using it.
 
-## Run
+## Install and build
 
-Requirements: Node.js 22+ and Microsoft Edge.
+Requirements: Node.js 22+ and either Microsoft Edge or Google Chrome.
 
 ```bash
 npm install
 npm run check
 npm test
-npm run dev -- auth
+npm run build
+npm link
 ```
 
-List chats and teams:
+## Authentication
+
+Sign in with Edge, the default browser:
 
 ```bash
-npm run dev -- list
-npm run dev -- list --json
-npm run dev -- list --limit 20
-npm run dev -- list --all
+teams-cli auth login
 ```
 
-The default view shows the 50 most recent non-hidden chats plus all Teams and their
-channels. Unknown member identifiers are not printed. `--all` includes hidden chats
-and removes the chat limit.
-
-For a specific tenant:
+Use Chrome or target a specific tenant:
 
 ```bash
-npm run dev -- auth --tenant YOUR_TENANT_ID
+teams-cli auth login --browser chrome
+teams-cli auth login --tenant YOUR_TENANT_ID
 ```
 
-By default, Edge login state is preserved in `.state/edge-profile` so later CLI runs
-can reuse the authenticated session. The directory is excluded from Git and must be
-protected like any other signed-in browser profile. Use `--profile PATH` to select a
-different location or `--ephemeral` for a one-off context that is deleted on exit.
-With a persistent profile, the CLI first attempts silent authentication and only
-shows account selection or MFA when Microsoft reports that interaction is required.
+Validate the saved session and inspect its identity, token audiences, expiry dates,
+and remaining lifetimes:
 
-## Current boundary
+```bash
+teams-cli auth whoami
+```
 
-The `auth` command captures only the initial Skype-resource token. The `list` command
-also requests the ChatSvcAgg resource token in the same Edge session because the
-conversation-discovery endpoint enforces that distinct token audience. Both tokens
-remain in memory and disappear when the process exits.
+Show all saved token values, or select one token for shell piping:
+
+```bash
+teams-cli auth tokens
+teams-cli auth token access
+teams-cli auth token skype
+```
+
+Treat raw bearer tokens like passwords. They may be captured by terminal scrollback,
+logs, or automation output.
+
+Decode only the JWT claims, omitting the encoded header and signature:
+
+```bash
+teams-cli auth tokens --decode
+teams-cli auth token access --decode
+teams-cli auth token skype --decode
+```
+
+Decoded output is JSON. Selecting one token produces its claims object directly;
+selecting all produces an object keyed by `access` and `skype`.
+
+Refresh both tokens, or refresh either token independently:
+
+```bash
+teams-cli auth refresh
+teams-cli auth refresh all
+teams-cli auth refresh access
+teams-cli auth refresh skype
+```
+
+`access` performs a non-interactive OAuth refresh with the saved browser profile.
+`skype` exchanges the current access token without opening a browser and fails if the
+access token has expired. `all` refreshes the access token first and then derives a
+new Skype token. The command reports each refreshed token's audience and absolute and
+remaining expiry both before and after the refresh.
+
+Log out locally:
+
+```bash
+teams-cli auth logout
+```
+
+Logout removes the saved CLI session and all dedicated Teams CLI browser profiles.
+It does not revoke tokens remotely at Microsoft.
+
+## Storage layout
+
+The CLI keeps authentication artifacts separate from future configuration and
+guardrail profiles:
+
+```text
+~/.teams-cli/
+├── auth/
+│   └── session.json
+└── browser-profiles/
+    ├── chrome/
+    └── edge/
+```
+
+Only the selected browser directory is created during login. The root and browser
+profiles use owner-only permissions, and the session file is written with mode
+`0600`. The storage code accepts an explicit root internally so a later profile
+system can place locked state in a workspace-controlled directory without changing
+the authentication model.
+
+## Session refresh
+
+`auth whoami` validates the stored access token through the Teams authentication
+service. If it has expired or is rejected, the CLI attempts one non-interactive
+refresh using the same dedicated browser profile. If Microsoft requires account
+selection, MFA, or another interaction, run `teams-cli auth login` again.
 
 ## Documentation
 
-- [Research log](docs/research.md) records the tools, projects, and documentation
-  consulted during the investigation, including which options depend on Graph.
-- [ADR 0001](docs/adr/0001-browser-backed-private-teams-api.md) documents the
-  constraints, options matrix, and decision to use a browser-backed private API.
+- [Research log](docs/research.md)
+- [ADR 0001](docs/adr/0001-browser-backed-private-teams-api.md)

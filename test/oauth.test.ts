@@ -4,8 +4,14 @@ import { SKYPE_RESOURCE, TEAMS_CLIENT_ID } from "../src/constants.js";
 import {
   createInitialTokenUrl,
   createResourceTokenUrl,
+  browserChannel,
   tokenFromRedirect,
 } from "../src/oauth.js";
+
+test("maps supported browsers to Playwright branded channels", () => {
+  assert.equal(browserChannel("edge"), "msedge");
+  assert.equal(browserChannel("chrome"), "chrome");
+});
 
 test("creates a first-party Teams authorization URL", () => {
   const url = new URL(createInitialTokenUrl("example-tenant"));

@@ -7,10 +7,18 @@ import {
 } from "./constants.js";
 
 export type LoginOptions = {
-  profileDirectory?: string;
+  profileDirectory: string;
+  browser: BrowserName;
+  interactive: boolean;
   tenant?: string;
   timeoutMs?: number;
 };
+
+export type BrowserName = "edge" | "chrome";
+
+export function browserChannel(browser: BrowserName): "msedge" | "chrome" {
+  return browser === "edge" ? "msedge" : "chrome";
+}
 
 export class OAuthRedirectError extends Error {
   constructor(
@@ -97,93 +105,35 @@ export async function acquireInitialToken(
   options: LoginOptions,
 ): Promise<{ close: () => Promise<void>; token: string }> {
   let context: BrowserContext;
-  let close: () => Promise<void>;
-
-  if (options.profileDirectory) {
+  try {
     context = await chromium.launchPersistentContext(options.profileDirectory, {
-      channel: "msedge",
-      headless: false,
+      channel: browserChannel(options.browser),
+      headless: !options.interactive,
       viewport: null,
       args: ["--no-first-run"],
     });
-    close = () => context.close();
-  } else {
-    const browser = await chromium.launch({
-      channel: "msedge",
-      headless: false,
-      args: ["--no-first-run"],
-    });
-    context = await browser.newContext({ viewport: null });
-    close = () => browser.close();
+  } catch (error) {
+    const label = options.browser === "edge" ? "Microsoft Edge" : "Google Chrome";
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Could not launch ${label}. Confirm it is installed and available: ${message}`);
   }
+  const close = () => context.close();
 
   const page = context.pages()[0] ?? (await context.newPage());
   const tokenPromise = waitForToken(page, options.timeoutMs ?? 5 * 60_000);
-  await page.goto(createInitialTokenUrl(options.tenant), { waitUntil: "domcontentloaded" });
-
   try {
+    await page.goto(
+      createResourceTokenUrl(
+        SKYPE_RESOURCE,
+        options.tenant,
+        options.interactive ? "select_account" : "none",
+      ),
+      { waitUntil: "domcontentloaded" },
+    );
     return { close, token: await tokenPromise };
   } catch (error) {
     await close();
-    throw error;
-  }
-}
-
-export async function acquireResourceTokens(
-  resources: readonly string[],
-  options: LoginOptions,
-): Promise<{ close: () => Promise<void>; tokens: Map<string, string> }> {
-  if (resources.length === 0) throw new Error("At least one resource is required");
-
-  let context: BrowserContext;
-  let close: () => Promise<void>;
-  if (options.profileDirectory) {
-    context = await chromium.launchPersistentContext(options.profileDirectory, {
-      channel: "msedge",
-      headless: false,
-      viewport: null,
-      args: ["--no-first-run"],
-    });
-    close = () => context.close();
-  } else {
-    const browser = await chromium.launch({
-      channel: "msedge",
-      headless: false,
-      args: ["--no-first-run"],
-    });
-    context = await browser.newContext({ viewport: null });
-    close = () => browser.close();
-  }
-
-  const page = context.pages()[0] ?? (await context.newPage());
-  const tokens = new Map<string, string>();
-  const navigateForToken = async (
-    resource: string,
-    prompt: "none" | "select_account",
-  ): Promise<string> => {
-    const tokenPromise = waitForToken(page, options.timeoutMs ?? 5 * 60_000);
-    await page.goto(createResourceTokenUrl(resource, options.tenant, prompt), {
-      waitUntil: "domcontentloaded",
-    });
-    return tokenPromise;
-  };
-  try {
-    for (const resource of resources) {
-      if (options.profileDirectory) {
-        try {
-          tokens.set(resource, await navigateForToken(resource, "none"));
-          continue;
-        } catch (error) {
-          if (!(error instanceof OAuthRedirectError) || error.code !== "interaction_required") {
-            throw error;
-          }
-        }
-      }
-      tokens.set(resource, await navigateForToken(resource, "select_account"));
-    }
-    return { close, tokens };
-  } catch (error) {
-    await close();
+    await tokenPromise.catch(() => undefined);
     throw error;
   }
 }

@@ -1,33 +1,31 @@
-# ADR 0001: Use Edge authentication with private Teams APIs
+# ADR 0001: Use browser-backed authentication with private Teams APIs
 
 - **Status:** Accepted
 - **Date:** 2026-08-11
+- **Updated:** 2026-08-14
 - **Decision owners:** Project maintainers
 
 ## Context
 
-The project needs a small, mostly read-only CLI for Microsoft Teams. The MVP must list
-the signed-in user's chats/conversations and Teams/channels. The environment does not
-allow registering an Entra application, Teams application, or bot, and Microsoft Graph
-cannot therefore be used with an approved client identity and delegated permissions.
+The project needs a minimal CLI that can authenticate a user to Microsoft Teams,
+reuse that authentication across command invocations, validate the current session,
+inspect its token lifetimes, and log out locally.
 
-The user already has legitimate interactive access to Teams. The problem is to reuse
-that user session without collecting a password, bypassing MFA, or extracting the
-desktop Teams client's long-lived credential store.
-
-The official and supported integration is Microsoft Graph. This ADR does not dispute
-that. It documents an experimental local workaround for a constrained environment.
+The environment does not allow registering an Entra application, Teams application,
+or bot. Microsoft Graph cannot therefore be used with an approved client identity and
+delegated permissions. The official and supported integration remains Microsoft
+Graph; this ADR documents an experimental local workaround for that constraint.
 
 ## Decision drivers
 
 - No new Entra application, Teams app, or bot registration.
-- No Microsoft Graph access under the current tenant constraints.
-- Read-only MVP: list chats/conversations and Teams/channels.
-- Preserve Microsoft login, MFA, and Conditional Access in a Microsoft browser.
-- Do not print or persist bearer-token values.
-- Avoid decrypting or copying credentials from the installed Teams client.
-- Reuse authentication state to minimize repeated user interaction.
-- Keep private endpoint coupling isolated and replaceable.
+- Preserve Microsoft login, MFA, and Conditional Access in a Microsoft-controlled UI.
+- Reuse authentication without requiring an interactive login for every invocation.
+- Keep authentication storage separate from future CLI configuration and guardrails.
+- Support installed branded Chromium browsers without binding the storage model to
+  one browser or operating system.
+- Expose bearer tokens only through an explicitly named token-display command.
+- Keep the private API coupling small and replaceable.
 
 ## Options considered
 
@@ -35,81 +33,106 @@ that. It documents an experimental local workaround for a constrained environmen
 |---|---:|---:|---:|---:|---|
 | Registered application with Microsoft Graph | No | High | Low | High | Preferred if constraints change |
 | Existing Graph CLI or managed Graph integration | No | Medium–High | Medium | High | Rejected under current constraints |
-| Recreate the legacy `fossteams` Electron login and save tokens | Yes, tenant-dependent | Low | High | Low | Rejected |
-| Decrypt tokens/cookies from the local Teams installation | Technically plausible | Very low | Very high | Low | Rejected |
-| Attach instrumentation to the running Teams desktop WebView | Plausible | Low | Medium | Medium–Low | Deferred |
-| UI-only browser automation/scraping | Yes | Low | Low | Medium–Low | Fallback only |
-| Dedicated Edge profile plus private API calls | Yes; live-verified | Low | Medium | Medium | Accepted |
+| Decrypt credentials from the installed Teams client | Plausible | Very low | Very high | Low | Rejected |
+| UI-only browser automation | Yes | Low | Low | Medium–Low | Fallback only |
+| Dedicated Chrome/Edge profile plus private auth API | Yes; Edge live-verified | Low | Medium | Medium | Accepted |
 
 ## Decision
 
-Use a dedicated, persistent Microsoft Edge profile as the authentication boundary.
-The CLI launches Edge through Playwright/CDP and attempts OAuth with `prompt=none` so
-the saved browser session can satisfy authentication silently. If Microsoft returns
-`interaction_required`, it falls back to interactive account selection or MFA in Edge.
+Use a dedicated, persistent browser profile as the authentication boundary. Microsoft
+Edge is the default; Google Chrome is also supported through Playwright's branded
+browser channels. The CLI does not read or modify the user's normal browser profile.
 
-The CLI requests two Microsoft first-party resource tokens:
+Interactive `auth login` requests an OAuth token for
+`https://api.spaces.skype.com` with Microsoft's first-party Teams client identity,
+then exchanges it through Teams `authsvc` for a regional Skype token. Both tokens are
+persisted so later command invocations can validate and inspect the session.
 
-1. `https://api.spaces.skype.com`, exchanged through Teams `authsvc` for the regional
-   Skype token and service endpoint map.
-2. `https://chatsvcagg.teams.microsoft.com`, used for conversation discovery.
+`auth whoami` validates the saved access token through `authsvc`. When the token is
+expired or rejected with `401` or `403`, the CLI attempts OAuth once with
+`prompt=none`, the saved tenant, and the same dedicated browser profile. It never
+turns that validation command into an interactive login. If Microsoft requires
+account selection, MFA, or another interaction, it tells the user to run `auth login`.
 
-Tokens remain in process memory. The project does not print them or write them to its
-own token files. Edge retains its normal encrypted cookies in `.state/edge-profile`,
-which is excluded from version control and must be treated as sensitive browser state.
+`auth whoami` shows identity, audience, absolute expiry, and duration remaining, but
+does not print token values. `auth tokens [all|access|skype]` is the only supported
+way to print complete bearer tokens. Its singular alias, `auth token`, provides
+the same behavior. With `--decode`, it prints only the decoded JWT claims as JSON,
+omitting the encoded header and signature.
 
-Conversation discovery calls the private CSA endpoint and maps the response into a
-small internal model. Default output excludes hidden conversations, caps the list,
-and does not print unresolved member identifiers.
+Explicit refresh is available at three granularities. `auth refresh all` reacquires
+the access token non-interactively and then derives a new Skype token. `auth refresh
+access` changes only the access token. `auth refresh skype` changes only the derived
+token and refuses to proceed when the stored access token is expired. Omitting the
+target is equivalent to `all`. Every refresh reports the selected token's audience,
+absolute expiry, and remaining lifetime before and after the operation.
 
-## Why one initial token was insufficient
+## Storage protocol
 
-The initial design attempted to minimize capture to the Skype resource token. Live
-testing showed that the ChatSvcAgg conversation endpoint enforces its own resource
-audience. The Skype token can be exchanged for a regional message token but cannot be
-used as the ChatSvcAgg bearer token. The MVP consequently obtains both resource tokens
-within the same authenticated Edge session.
+Authentication state is partitioned beneath a replaceable storage root:
+
+```text
+<storage-root>/
+├── auth/
+│   └── session.json
+└── browser-profiles/
+    ├── chrome/
+    └── edge/
+```
+
+The current root is `~/.teams-cli`. The root and browser directories use owner-only
+permissions, and `auth/session.json` uses mode `0600` and atomic replacement.
+
+Paths are derived from an explicit storage-root value internally rather than being
+scattered through authentication code. A future profile and guardrail design may
+resolve the root to a workspace-controlled directory so an agent does not need write
+access to home-directory configuration or locked policy files. Root selection,
+profile locking, and guardrail enforcement are intentionally outside the current
+implementation.
+
+`auth logout` removes only `auth/session.json` and the `browser-profiles` subtree. It
+does not remove future configuration or guardrail files under the storage root, and it
+does not claim to revoke tokens remotely at Microsoft.
 
 ## Consequences
 
 ### Positive
 
-- The MVP works without a custom application registration or Graph permission grant.
+- Authentication works without custom application registration or Graph permissions.
 - Microsoft remains responsible for password entry, MFA, and Conditional Access UI.
-- Preserved Edge state eliminates repeated interaction while the session remains valid.
-- Private API code is small and can be replaced if Graph becomes available.
-- Live testing has verified chat, Team, and channel discovery against the target tenant.
+- Saved tokens and browser state avoid repeated interaction while the session can be
+  refreshed.
+- Browser-specific subdirectories avoid mixing Chrome and Edge profile data.
+- A replaceable root leaves room for workspace-scoped, access-controlled profiles.
 
 ### Negative
 
 - The approach is undocumented and unsupported by Microsoft.
-- It relies on Microsoft's first-party Teams client identity and legacy OAuth behavior.
-- Private endpoints and payloads may change without notice.
-- Tenant policy can block the flow at any time.
-- A persistent Edge profile is sensitive local state and requires filesystem protection.
-- The integration may require organizational/legal review before wider deployment.
+- It relies on Microsoft's first-party client identity and legacy OAuth behavior.
+- Tenant policy or private endpoint changes can break the flow.
+- Persisted tokens and browser profiles are sensitive local state.
+- Explicit raw-token output can leak through terminal scrollback or captured output.
+- Chrome support is implemented through Playwright but still requires live validation
+  in each target operating environment and enterprise policy configuration.
 
 ## Operational rules
 
-- Keep `.state/` out of version control.
-- Never log Authorization headers, callback fragments, cookie values, or raw tokens.
-- Prefer `prompt=none`; use interactive Edge only after an explicit Microsoft
-  interaction-required response.
-- Make only read operations unless a later ADR explicitly authorizes writes.
-- Bound and normalize private API output before displaying or logging it.
-- Treat HTTP 401/403 responses as authentication or tenant-policy failures; do not
-  bypass MFA, Conditional Access, consent, or security interstitials.
-- Keep the [research log](../research.md) current as alternatives are evaluated.
+- Keep authentication state outside the repository by default.
+- Never log Authorization headers, callback fragments, cookies, or raw tokens.
+- Print raw tokens only through `auth tokens` or its `auth token` alias.
+- Use interactive authentication only for `auth login`.
+- Verify refreshed tokens remain in the stored tenant before replacing the session.
+- Treat HTTP `401` and `403` as authentication or tenant-policy failures; do not bypass
+  MFA, Conditional Access, consent, or security interstitials.
+- Add no Teams data reads or writes without a later explicit decision.
 
 ## Revisit conditions
 
 Revisit this decision when any of the following occurs:
 
 - An approved Entra application registration and Graph permissions become available.
-- Microsoft changes or disables either resource-token flow.
-- The private CSA or `authsvc` endpoints become incompatible.
+- Microsoft changes or disables the resource-token or `authsvc` flow.
+- Another browser or operating system needs different profile handling.
+- Workspace-scoped profiles, immutable guardrails, or agent access boundaries are
+  implemented.
 - Microsoft offers a supported user CLI or broker flow that meets the constraints.
-- The project expands beyond local, read-only use.
-
-If Graph becomes available, migrate to it and deprecate the private API adapter rather
-than extending the workaround.

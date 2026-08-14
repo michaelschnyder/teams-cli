@@ -23,6 +23,16 @@ export type TeamsSession = {
   };
 };
 
+export class TeamsAuthError extends Error {
+  constructor(
+    readonly status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "TeamsAuthError";
+  }
+}
+
 export async function exchangeInitialToken(initialToken: string): Promise<TeamsSession> {
   const response = await fetch(TEAMS_AUTHZ_URL, {
     method: "POST",
@@ -41,7 +51,10 @@ export async function exchangeInitialToken(initialToken: string): Promise<TeamsS
     } catch {
       // Preserve the bounded text response for diagnostics.
     }
-    throw new Error(`Teams auth exchange failed (${response.status}): ${message}`);
+    throw new TeamsAuthError(
+      response.status,
+      `Teams auth exchange failed (${response.status}): ${message}`,
+    );
   }
 
   const payload = JSON.parse(raw) as AuthzPayload;
@@ -68,4 +81,3 @@ export async function exchangeInitialToken(initialToken: string): Promise<TeamsS
     },
   };
 }
-
