@@ -10,6 +10,11 @@ import {
   type AuthDependencies,
 } from "../src/auth.js";
 import { saveSession, storagePaths, type StoredSession } from "../src/storage.js";
+import {
+  CHAT_SVC_AGG_RESOURCE,
+  OUTLOOK_SEARCH_RESOURCE,
+  SKYPE_RESOURCE,
+} from "../src/constants.js";
 
 function jwt(payload: object): string {
   return `header.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`;
@@ -20,10 +25,11 @@ test("silently refreshes an expired session with its saved browser and tenant", 
   try {
     const paths = storagePaths(root);
     const expired: StoredSession = {
-      version: 1,
+      version: 2,
       browser: "chrome",
       tenantId: "tenant",
       savedAt: "2026-08-13T00:00:00.000Z",
+      region: "emea",
       accessToken: {
         value: jwt({ tid: "tenant", exp: 1_700_000_000 }),
         expiresAt: "2023-11-14T22:13:20.000Z",
@@ -32,6 +38,15 @@ test("silently refreshes an expired session with its saved browser and tenant", 
         value: jwt({ tid: "tenant", exp: 1_700_000_000 }),
         expiresAt: "2023-11-14T22:13:20.000Z",
       },
+      chatToken: {
+        value: jwt({ tid: "tenant", exp: 1_700_000_000 }),
+        expiresAt: "2023-11-14T22:13:20.000Z",
+      },
+      searchToken: {
+        value: jwt({ tid: "tenant", exp: 1_700_000_000 }),
+        expiresAt: "2023-11-14T22:13:20.000Z",
+      },
+      endpoints: { chatService: "https://emea.ng.msg.teams.microsoft.com" },
     };
     await saveSession(paths, expired);
 
@@ -45,18 +60,32 @@ test("silently refreshes an expired session with its saved browser and tenant", 
       exp: 1_800_000_000,
     });
     const freshSkype = jwt({ aud: "skype-audience", tid: "tenant", exp: 1_800_000_100 });
+    const freshChat = jwt({ aud: "chat-audience", tid: "tenant", exp: 1_800_000_100 });
+    const freshSearch = jwt({ aud: "search-audience", tid: "tenant", exp: 1_800_000_100 });
     const dependencies: AuthDependencies = {
       now: () => new Date("2026-08-14T00:00:00.000Z"),
-      acquireToken: async (options) => {
+      acquireTokens: async (resources, options) => {
+        assert.deepEqual(resources, [SKYPE_RESOURCE, CHAT_SVC_AGG_RESOURCE, OUTLOOK_SEARCH_RESOURCE]);
         assert.equal(options.browser, "chrome");
         assert.equal(options.interactive, false);
         assert.equal(options.tenant, "tenant");
         assert.equal(options.profileDirectory, paths.browserProfile("chrome"));
-        return { token: freshAccess, close: async () => { closed = true; } };
+        return {
+          tokens: new Map([
+            [SKYPE_RESOURCE, freshAccess],
+            [CHAT_SVC_AGG_RESOURCE, freshChat],
+            [OUTLOOK_SEARCH_RESOURCE, freshSearch],
+          ]),
+          close: async () => { closed = true; },
+        };
       },
       exchangeToken: async (token) => {
         assert.equal(token, freshAccess);
-        return { skypeToken: freshSkype, endpoints: {} };
+        return {
+          skypeToken: freshSkype,
+          region: "emea",
+          endpoints: { chatService: "https://emea.ng.msg.teams.microsoft.com" },
+        };
       },
     };
 
@@ -79,20 +108,28 @@ test("refreshes only the access token when requested", async () => {
     const oldAccess = jwt({ tid: "tenant", exp: 1_800_000_000 });
     const oldSkype = jwt({ tid: "tenant", exp: 1_800_000_100 });
     await saveSession(paths, {
-      version: 1,
+      version: 2,
       browser: "edge",
       tenantId: "tenant",
       savedAt: "2026-08-13T00:00:00.000Z",
+      region: "emea",
       accessToken: { value: oldAccess, expiresAt: "2027-01-15T08:00:00.000Z" },
       skypeToken: { value: oldSkype, expiresAt: "2027-01-15T08:01:40.000Z" },
+      chatToken: { value: jwt({ tid: "tenant" }), expiresAt: "2027-01-15T08:01:40.000Z" },
+      searchToken: { value: jwt({ tid: "tenant" }), expiresAt: "2027-01-15T08:01:40.000Z" },
+      endpoints: { chatService: "https://emea.ng.msg.teams.microsoft.com" },
     });
     const freshAccess = jwt({ tid: "tenant", exp: 1_800_001_000 });
     const dependencies: AuthDependencies = {
       now: () => new Date("2026-08-14T00:00:00.000Z"),
-      acquireToken: async (options) => {
+      acquireTokens: async (resources, options) => {
+        assert.deepEqual(resources, [SKYPE_RESOURCE]);
         assert.equal(options.browser, "edge");
         assert.equal(options.interactive, false);
-        return { token: freshAccess, close: async () => undefined };
+        return {
+          tokens: new Map([[SKYPE_RESOURCE, freshAccess]]),
+          close: async () => undefined,
+        };
       },
       exchangeToken: async () => {
         throw new Error("access-only refresh must not exchange the Skype token");
@@ -116,21 +153,29 @@ test("refreshes only the Skype token when the access token is valid", async () =
     const oldSkype = jwt({ tid: "tenant", exp: 1_700_000_000 });
     const freshSkype = jwt({ tid: "tenant", exp: 1_800_001_000 });
     await saveSession(paths, {
-      version: 1,
+      version: 2,
       browser: "chrome",
       tenantId: "tenant",
       savedAt: "2026-08-13T00:00:00.000Z",
+      region: "emea",
       accessToken: { value: access, expiresAt: "2027-01-15T08:00:00.000Z" },
       skypeToken: { value: oldSkype, expiresAt: "2023-11-14T22:13:20.000Z" },
+      chatToken: { value: jwt({ tid: "tenant" }), expiresAt: "2027-01-15T08:01:40.000Z" },
+      searchToken: { value: jwt({ tid: "tenant" }), expiresAt: "2027-01-15T08:01:40.000Z" },
+      endpoints: { chatService: "https://emea.ng.msg.teams.microsoft.com" },
     });
     const dependencies: AuthDependencies = {
       now: () => new Date("2026-08-14T00:00:00.000Z"),
-      acquireToken: async () => {
+      acquireTokens: async () => {
         throw new Error("Skype-only refresh must not launch a browser");
       },
       exchangeToken: async (token) => {
         assert.equal(token, access);
-        return { skypeToken: freshSkype, endpoints: {} };
+        return {
+          skypeToken: freshSkype,
+          region: "emea",
+          endpoints: { chatService: "https://emea.ng.msg.teams.microsoft.com" },
+        };
       },
     };
 

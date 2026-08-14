@@ -55,17 +55,18 @@ turns that validation command into an interactive login. If Microsoft requires
 account selection, MFA, or another interaction, it tells the user to run `auth login`.
 
 `auth whoami` shows identity, audience, absolute expiry, and duration remaining, but
-does not print token values. `auth tokens [all|access|skype]` is the only supported
+does not print token values. `auth tokens [all|access|skype|chat|search]` is the only supported
 way to print complete bearer tokens. Its singular alias, `auth token`, provides
 the same behavior. With `--decode`, it prints only the decoded JWT claims as JSON,
 omitting the encoded header and signature.
 
-Explicit refresh is available at three granularities. `auth refresh all` reacquires
-the access token non-interactively and then derives a new Skype token. `auth refresh
-access` changes only the access token. `auth refresh skype` changes only the derived
-token and refuses to proceed when the stored access token is expired. Omitting the
-target is equivalent to `all`. Every refresh reports the selected token's audience,
-absolute expiry, and remaining lifetime before and after the operation.
+Explicit refresh also covers the ChatSvcAgg and Outlook Search resource tokens
+introduced by [ADR 0002](0002-server-backed-chat-and-message-reads.md). `auth refresh
+all` reacquires every OAuth resource non-interactively and derives a new Skype token.
+`auth refresh access|skype|chat|search` changes only the selected credential, subject
+to its prerequisite token being valid. Omitting the target is equivalent to `all`.
+Every refresh reports the selected token's audience, absolute expiry, and remaining
+lifetime before and after the operation.
 
 ## Storage protocol
 
@@ -124,7 +125,8 @@ does not claim to revoke tokens remotely at Microsoft.
 - Verify refreshed tokens remain in the stored tenant before replacing the session.
 - Treat HTTP `401` and `403` as authentication or tenant-policy failures; do not bypass
   MFA, Conditional Access, consent, or security interstitials.
-- Add no Teams data reads or writes without a later explicit decision.
+- Teams data reads are authorized only as described by ADR 0002. No Teams writes are
+  authorized.
 
 ## Revisit conditions
 

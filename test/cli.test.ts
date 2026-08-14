@@ -8,17 +8,21 @@ function jwt(payload: object): string {
 }
 
 const session: StoredSession = {
-  version: 1,
+  version: 2,
   browser: "edge",
   tenantId: "tenant",
   savedAt: "2026-08-14T00:00:00.000Z",
+  region: "emea",
   accessToken: { value: jwt({ kind: "access" }), expiresAt: "2027-01-01T00:00:00.000Z" },
   skypeToken: { value: jwt({ kind: "skype" }), expiresAt: "2027-01-01T00:00:00.000Z" },
+  chatToken: { value: jwt({ kind: "chat" }), expiresAt: "2027-01-01T00:00:00.000Z" },
+  searchToken: { value: jwt({ kind: "search" }), expiresAt: "2027-01-01T00:00:00.000Z" },
+  endpoints: { chatService: "https://emea.ng.msg.teams.microsoft.com" },
 };
 
-test("exposes only the minimal auth command group", () => {
+test("exposes auth and chat command groups", () => {
   const program = createProgram();
-  assert.deepEqual(program.commands.map((command) => command.name()), ["auth"]);
+  assert.deepEqual(program.commands.map((command) => command.name()), ["auth", "chats"]);
   assert.deepEqual(
     program.commands[0]?.commands.map((command) => command.name()),
     ["login", "refresh", "whoami", "tokens", "logout"],

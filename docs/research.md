@@ -2,7 +2,7 @@
 
 This document records tools, projects, and web pages consulted while investigating
 a mostly read-only Microsoft Teams CLI that cannot register its own Entra application,
-Teams app, or bot. It was last updated on 2026-08-11.
+Teams app, or bot. It was last updated on 2026-08-14.
 
 ## Applicability legend
 
@@ -131,6 +131,35 @@ call the same private services required by that client.
   Teams `authsvc` for a regional Skype token and endpoint map.
 - A preserved Edge profile can acquire both resource tokens silently until Microsoft
   requires account selection, MFA, or another Conditional Access step.
+- Live inspection of the current Teams web client confirmed that CSA v3 returns chat
+  pages with embedded members, `hasMoreChats`, and a sync token. The next request uses
+  `/updates` and passes that token in `x-ms-synctoken`.
+- Cookie-free live validation confirmed that the existing CSA v1 endpoint accepts the
+  ChatSvcAgg bearer token and returns the complete chat collection. The current v3 web
+  proxy rejects the same bearer credentials without the browser's cookie context, so
+  the CLI retains v1 while preserving its server continuation fields when present.
+- A follow-up against a tenant with 2,346 chats returned `hasMoreChats: false`.
+  `pageSize`, `chatListPageSize`, `limit`, and ordering query parameters did not alter
+  the response cardinality or order. The server order was not descending by last
+  activity. A CLI limit, pagination, or last-activity sort would therefore be local
+  processing and is intentionally not implemented.
+- The chat-list text box labeled “Filter by person, chat or channel name” made no
+  search request and is a client-side filter. It is not reproduced by the CLI.
+- Teams GoTo sends server-side Substrate suggestions requests with an OAuth token
+  whose audience is `https://outlook.office.com/search`. Live probing showed that a
+  Chat request size of 25 returned 13 results for `Vlad`, rather than the five returned
+  when five were requested. The matching participant is in `MatchingMembers`, outside
+  the sampled `ChatMembers` roster.
+- One-to-one conversations are absent from Chat suggestions. A People request returns
+  the matching identity MRI; constructing the standard tenant one-to-one ID and
+  reading it from the regional conversation endpoint returns `200` for an existing
+  direct chat and `404` otherwise. This provides a read-only, server-verified direct
+  result without filtering the complete CSA collection locally.
+- An old regional message-service description advertises `sortOrderAsc`, `startId`,
+  `endId`, and `queryOnProperty`, but live production requests ignored those values
+  and retained the default order and unfiltered page. The CLI does not expose them.
+  Live requests do honor `pageSize`, and `_metadata.backwardLink` is the continuation
+  for older messages while retaining that page size.
 
 ## CLI design and agent ergonomics
 

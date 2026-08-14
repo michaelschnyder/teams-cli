@@ -13,12 +13,16 @@ import {
 } from "../src/storage.js";
 
 const session: StoredSession = {
-  version: 1,
+  version: 2,
   browser: "chrome",
   tenantId: "tenant",
   savedAt: "2026-08-14T00:00:00.000Z",
+  region: "emea",
   accessToken: { value: "access", expiresAt: "2026-08-14T01:00:00.000Z" },
   skypeToken: { value: "skype", expiresAt: "2026-08-14T01:00:00.000Z" },
+  chatToken: { value: "chat", expiresAt: "2026-08-14T01:00:00.000Z" },
+  searchToken: { value: "search", expiresAt: "2026-08-14T01:00:00.000Z" },
+  endpoints: { chatService: "https://emea.ng.msg.teams.microsoft.com" },
 };
 
 test("partitions auth and browser state below a replaceable storage root", async () => {

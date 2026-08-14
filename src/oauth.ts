@@ -104,6 +104,20 @@ async function waitForToken(page: Page, timeoutMs: number): Promise<string> {
 export async function acquireInitialToken(
   options: LoginOptions,
 ): Promise<{ close: () => Promise<void>; token: string }> {
+  const acquired = await acquireResourceTokens([SKYPE_RESOURCE], options);
+  const token = acquired.tokens.get(SKYPE_RESOURCE);
+  if (!token) {
+    await acquired.close();
+    throw new Error("Microsoft login returned no Skype resource token");
+  }
+  return { close: acquired.close, token };
+}
+
+export async function acquireResourceTokens(
+  resources: readonly string[],
+  options: LoginOptions,
+): Promise<{ close: () => Promise<void>; tokens: Map<string, string> }> {
+  if (resources.length === 0) throw new Error("At least one OAuth resource is required");
   let context: BrowserContext;
   try {
     context = await chromium.launchPersistentContext(options.profileDirectory, {
@@ -120,20 +134,28 @@ export async function acquireInitialToken(
   const close = () => context.close();
 
   const page = context.pages()[0] ?? (await context.newPage());
-  const tokenPromise = waitForToken(page, options.timeoutMs ?? 5 * 60_000);
   try {
-    await page.goto(
-      createResourceTokenUrl(
-        SKYPE_RESOURCE,
-        options.tenant,
-        options.interactive ? "select_account" : "none",
-      ),
-      { waitUntil: "domcontentloaded" },
-    );
-    return { close, token: await tokenPromise };
+    const tokens = new Map<string, string>();
+    for (const [index, resource] of resources.entries()) {
+      const tokenPromise = waitForToken(page, options.timeoutMs ?? 5 * 60_000);
+      try {
+        await page.goto(
+          createResourceTokenUrl(
+            resource,
+            options.tenant,
+            options.interactive && index === 0 ? "select_account" : "none",
+          ),
+          { waitUntil: "domcontentloaded" },
+        );
+        tokens.set(resource, await tokenPromise);
+      } catch (error) {
+        await tokenPromise.catch(() => undefined);
+        throw error;
+      }
+    }
+    return { close, tokens };
   } catch (error) {
     await close();
-    await tokenPromise.catch(() => undefined);
     throw error;
   }
 }

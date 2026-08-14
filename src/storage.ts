@@ -9,7 +9,7 @@ export type StoredToken = {
   expiresAt: string;
 };
 
-export type StoredSession = {
+export type LegacyStoredSession = {
   version: 1;
   browser: BrowserName;
   tenantId: string;
@@ -17,6 +17,25 @@ export type StoredSession = {
   accessToken: StoredToken;
   skypeToken: StoredToken;
 };
+
+export type StoredSession = {
+  version: 2;
+  browser: BrowserName;
+  tenantId: string;
+  savedAt: string;
+  region: string;
+  accessToken: StoredToken;
+  skypeToken: StoredToken;
+  chatToken: StoredToken;
+  searchToken: StoredToken;
+  endpoints: {
+    chatService: string;
+    chatServiceAggregator?: string;
+    middleTier?: string;
+  };
+};
+
+export type AnyStoredSession = LegacyStoredSession | StoredSession;
 
 export type StoragePaths = {
   root: string;
@@ -60,20 +79,32 @@ export async function saveSession(paths: StoragePaths, session: StoredSession): 
   await chmod(paths.sessionFile, 0o600);
 }
 
-function isStoredSession(value: unknown): value is StoredSession {
+function isStoredToken(value: unknown): value is StoredToken {
   if (!value || typeof value !== "object") return false;
-  const session = value as Partial<StoredSession>;
-  return session.version === 1 &&
+  const token = value as Partial<StoredToken>;
+  return typeof token.value === "string" && typeof token.expiresAt === "string";
+}
+
+function isStoredSession(value: unknown): value is AnyStoredSession {
+  if (!value || typeof value !== "object") return false;
+  const session = value as Partial<AnyStoredSession>;
+  const common =
     (session.browser === "edge" || session.browser === "chrome") &&
     typeof session.tenantId === "string" &&
     typeof session.savedAt === "string" &&
-    typeof session.accessToken?.value === "string" &&
-    typeof session.accessToken.expiresAt === "string" &&
-    typeof session.skypeToken?.value === "string" &&
-    typeof session.skypeToken.expiresAt === "string";
+    isStoredToken(session.accessToken) &&
+    isStoredToken(session.skypeToken);
+  if (!common) return false;
+  if (session.version === 1) return true;
+  if (session.version !== 2) return false;
+  const current = session as Partial<StoredSession>;
+  return typeof current.region === "string" &&
+    isStoredToken(current.chatToken) &&
+    isStoredToken(current.searchToken) &&
+    typeof current.endpoints?.chatService === "string";
 }
 
-export async function loadSession(paths: StoragePaths): Promise<StoredSession> {
+export async function loadSession(paths: StoragePaths): Promise<AnyStoredSession> {
   let raw: string;
   try {
     raw = await readFile(paths.sessionFile, "utf8");
@@ -86,6 +117,15 @@ export async function loadSession(paths: StoragePaths): Promise<StoredSession> {
   const parsed: unknown = JSON.parse(raw);
   if (!isStoredSession(parsed)) throw new Error("Stored Teams session is invalid. Log in again.");
   return parsed;
+}
+
+export function requireCurrentSession(session: AnyStoredSession): StoredSession {
+  if (session.version !== 2) {
+    throw new Error(
+      "Stored Teams session is outdated. Run `teams-cli auth refresh all` to update it.",
+    );
+  }
+  return session;
 }
 
 export async function clearAuthentication(paths: StoragePaths): Promise<void> {
