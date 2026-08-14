@@ -169,9 +169,10 @@ function renderChats(result: ChatPage | ChatSearchResult): string {
     const returnedNames = chat.participants.map((participant) =>
       participant.displayName ?? participant.id);
     const missing = Math.max(0, chat.participantCount - chat.participants.length - 1);
+    const missingLabel = missing > 1 ? ` (+${missing} not returned)` : "";
     const participantText = returnedNames.length
-      ? `${returnedNames.join(", ")}${missing ? ` (+${missing} not returned)` : ""}`
-      : `none returned${missing ? ` (${missing} total)` : ""}`;
+      ? `${returnedNames.join(", ")}${missingLabel}`
+      : `none returned${missing > 1 ? ` (${missing} not returned)` : ""}`;
     return [
       fitCell(chat.title, 40),
       fitCell(participantText, 64),
