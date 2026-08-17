@@ -151,10 +151,11 @@ call the same private services required by that client.
   when five were requested. The matching participant is in `MatchingMembers`, outside
   the sampled `ChatMembers` roster.
 - One-to-one conversations are absent from Chat suggestions. A People request returns
-  the matching identity MRI; constructing the standard tenant one-to-one ID and
-  reading it from the regional conversation endpoint returns `200` for an existing
-  direct chat and `404` otherwise. This provides a read-only, server-verified direct
-  result without filtering the complete CSA collection locally.
+  the matching identity MRI. Live conversations use both possible orderings of the
+  current and other tenant object IDs, so both candidate one-to-one IDs must be read
+  from the regional conversation endpoint. A `200` identifies the existing direct
+  chat; two `404` responses confirm there is none. This provides a read-only,
+  server-verified direct result without filtering the complete CSA collection locally.
 - An old regional message-service description advertises `sortOrderAsc`, `startId`,
   `endId`, and `queryOnProperty`, but live production requests ignored those values
   and retained the default order and unfiltered page. The CLI does not expose them.

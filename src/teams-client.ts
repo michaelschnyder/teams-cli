@@ -398,34 +398,40 @@ export async function findChats(
     const ownObjectId = readJwtMetadata(session.accessToken.value).userId;
     if (!ownObjectId) throw new Error("The saved access token has no user object ID");
     const otherObjectId = participant.id.slice("8:orgid:".length);
-    const chatId = `19:${otherObjectId}_${ownObjectId}@unq.gbl.spaces`;
-    const url = new URL(
-      `/v1/users/ME/conversations/${encodeURIComponent(chatId)}`,
-      session.endpoints.chatService,
-    );
-    const lookup = await fetchImplementation(url, {
-      headers: {
-        authentication: `skypetoken=${session.skypeToken.value}`,
-        accept: "application/json",
-      },
-    });
-    if (lookup.status === 404) return null;
-    const conversation = await jsonResponse(lookup, "Direct chat lookup", "skype") as {
-      lastMessage?: { composetime?: unknown; originalarrivaltime?: unknown };
-    };
-    return {
-      id: chatId,
-      title: participant.displayName ?? participant.id,
-      type: "Chat",
-      oneOnOne: true,
-      hidden: false,
-      disabled: false,
-      read: null,
-      lastActivity: stringValue(conversation.lastMessage?.composetime) ??
-        stringValue(conversation.lastMessage?.originalarrivaltime),
-      participants: [participant],
-      participantCount: 2,
-    };
+    const candidateIds = [
+      `19:${otherObjectId}_${ownObjectId}@unq.gbl.spaces`,
+      `19:${ownObjectId}_${otherObjectId}@unq.gbl.spaces`,
+    ];
+    for (const chatId of candidateIds) {
+      const url = new URL(
+        `/v1/users/ME/conversations/${encodeURIComponent(chatId)}`,
+        session.endpoints.chatService,
+      );
+      const lookup = await fetchImplementation(url, {
+        headers: {
+          authentication: `skypetoken=${session.skypeToken.value}`,
+          accept: "application/json",
+        },
+      });
+      if (lookup.status === 404) continue;
+      const conversation = await jsonResponse(lookup, "Direct chat lookup", "skype") as {
+        lastMessage?: { composetime?: unknown; originalarrivaltime?: unknown };
+      };
+      return {
+        id: chatId,
+        title: participant.displayName ?? participant.id,
+        type: "Chat",
+        oneOnOne: true,
+        hidden: false,
+        disabled: false,
+        read: null,
+        lastActivity: stringValue(conversation.lastMessage?.composetime) ??
+          stringValue(conversation.lastMessage?.originalarrivaltime),
+        participants: [participant],
+        participantCount: 2,
+      };
+    }
+    return null;
   }));
   return {
     query: trimmed,

@@ -38,12 +38,14 @@ Add read-only chat and message commands using the same private services as Teams
   `MatchingMembers`; normalization includes those people before the sampled roster so
   the reason for a match is visible.
 - Teams represents one-to-one GoTo matches as People suggestions rather than Chat
-  suggestions. For each server-ranked People result, the CLI derives the standard
-  one-to-one conversation ID from the two tenant object IDs and performs a read-only
-  regional conversation lookup. Existing direct conversations are returned first in
-  People ranking, followed by Chat suggestions in Chat ranking. A `404` is treated as
-  confirmation that no existing direct conversation should be reported. No local
-  text matching or sorting is performed.
+  suggestions. For each server-ranked People result, the CLI derives both observed
+  one-to-one conversation-ID orderings from the two tenant object IDs and performs
+  read-only regional conversation lookups until one exists. Teams does not use one
+  canonical ordering: live conversations were found with both the other-user-first
+  and current-user-first forms. Existing direct conversations are returned first in
+  People ranking, followed by Chat suggestions in Chat ranking. Two `404` responses
+  confirm that no existing direct conversation should be reported. No local text
+  matching or sorting is performed.
 - The regional chat service returns message pages and individual messages. Page size
   and continuation links are passed to the service without local reinterpretation.
   Although an old service description lists sort and ID-range parameters, live
