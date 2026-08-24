@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { Argument, Command, Option } from "commander";
 import { realpathSync } from "node:fs";
+import { randomInt, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import {
   describeSession,
@@ -14,6 +15,8 @@ import {
   type WhoamiResult,
 } from "./auth.js";
 import { withDataSession } from "./data.js";
+import { clearStatus, configureDiagnostics, showStatus } from "./diagnostics.js";
+import { requireAllowedTarget, type MessageTarget } from "./guardrails.js";
 import { decodeJwtClaims, formatDuration, readJwtMetadata, secondsUntil } from "./jwt.js";
 import type { BrowserName } from "./oauth.js";
 import {
@@ -25,15 +28,21 @@ import {
   type StoredToken,
 } from "./storage.js";
 import {
-  findChats,
+  getChannel,
+  getChat,
   getMessage,
+  listChannels,
   listChats,
   listMessages,
+  sendMessage,
+  type ChannelList,
+  type ChannelResult,
   type ChatPage,
-  type ChatSearchResult,
+  type ChatResult,
   type ChatSummary,
   type MessagePage,
   type MessageResult,
+  type MessageSendResult,
   type MessageSummary,
 } from "./teams-client.js";
 
@@ -164,7 +173,7 @@ function renderTable(rows: string[][], headers: string[]): string[] {
   return [line(headers), line(widths.map((width) => "-".repeat(width))), ...rows.map(line)];
 }
 
-function renderChats(result: ChatPage | ChatSearchResult): string {
+function renderChats(result: ChatPage): string {
   const rows = result.chats.map((chat) => {
     const returnedNames = chat.participants.map((participant) =>
       participant.displayName ?? participant.id);
@@ -191,6 +200,27 @@ function renderChats(result: ChatPage | ChatSearchResult): string {
   return `${lines.join("\n")}\n`;
 }
 
+function renderChatResult(result: ChatResult): string {
+  const chat = result.chat;
+  return `${chat.title}\nChat ID: ${chat.id}\nParticipants: ${chat.participants.map((participant) => participant.displayName ?? participant.id).join(", ")}\n`;
+}
+
+function renderChannels(result: ChannelList): string {
+  const rows = result.channels.map((channel) => [
+    fitCell(channel.name, 40),
+    fitCell(channel.team.name, 40),
+    channel.id,
+  ]);
+  const lines = [`Channels (${result.channels.length})`];
+  if (rows.length) lines.push(...renderTable(rows, ["Channel", "Team", "Channel ID"]));
+  return `${lines.join("\n")}\n`;
+}
+
+function renderChannelResult(result: ChannelResult): string {
+  const channel = result.channel;
+  return `${channel.name}\nChannel ID: ${channel.id}\nTeam: ${channel.team.name} (${channel.team.id})\nDescription: ${channel.description ?? ""}\n`;
+}
+
 function renderMessage(message: MessageSummary): string[] {
   const sender = message.sender.displayName ?? message.sender.id ?? "unknown";
   return [
@@ -200,14 +230,19 @@ function renderMessage(message: MessageSummary): string[] {
 }
 
 function renderMessages(result: MessagePage): string {
-  const lines = [`Messages (${result.messages.length}) for ${result.chatId}`];
+  const lines = [`Messages (${result.messages.length}) for ${result.target.kind} ${result.target.id}`];
   for (const message of result.messages) lines.push(...renderMessage(message));
   if (result.page.nextCursor) lines.push(`Next cursor: ${result.page.nextCursor}`);
   return `${lines.join("\n")}\n`;
 }
 
 function renderMessageResult(result: MessageResult): string {
-  return `${[`Message for ${result.chatId}`, ...renderMessage(result.message)].join("\n")}\n`;
+  return `${[`Message for ${result.target.kind} ${result.target.id}`, ...renderMessage(result.message)].join("\n")}\n`;
+}
+
+function renderMessageSendResult(result: MessageSendResult): string {
+  const identifier = result.message ? ` ${result.message.id}` : "";
+  return `Sent message${identifier} to ${result.target.kind} ${result.target.id}.\n`;
 }
 
 function writeData(value: unknown, human: string, json: boolean): void {
@@ -222,12 +257,51 @@ function parsePageSize(raw: string): number {
   return value;
 }
 
+type TargetOptions = { chat?: string; channel?: string };
+
+export function selectedTarget(options: TargetOptions): MessageTarget {
+  if ((options.chat ? 1 : 0) + (options.channel ? 1 : 0) !== 1) {
+    throw new Error("Exactly one of --chat or --channel is required");
+  }
+  return options.chat
+    ? { kind: "chat", id: options.chat }
+    : { kind: "channel", id: options.channel as string };
+}
+
+async function messageBody(body: string | undefined): Promise<string> {
+  let value = body;
+  if (value === undefined) {
+    if (process.stdin.isTTY) throw new Error("Provide --body or pipe a message on stdin");
+    const chunks: Buffer[] = [];
+    for await (const chunk of process.stdin) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+    value = Buffer.concat(chunks).toString("utf8");
+  }
+  if (!value.trim()) throw new Error("Message body must not be empty");
+  return value;
+}
+
+async function runWithStatus<T>(
+  program: Command,
+  json: boolean,
+  status: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  configureDiagnostics({ progress: Boolean(process.stderr.isTTY) && !json, debug: program.opts().debug === true });
+  showStatus(status);
+  try {
+    return await operation();
+  } finally {
+    clearStatus();
+  }
+}
+
 export function createProgram(): Command {
   const paths = storagePaths();
   const program = new Command()
     .name("teams-cli")
     .description("A minimal command-line client for a persistent Microsoft Teams session")
     .version("0.1.0")
+    .option("--debug", "Show sanitized HTTP request diagnostics")
     .showHelpAfterError();
   const auth = program.command("auth").description("Manage Microsoft Teams authentication");
 
@@ -242,7 +316,7 @@ export function createProgram(): Command {
     )
     .action(async (options: { browser: BrowserName; tenant?: string }) => {
       process.stderr.write(`Opening ${options.browser === "edge" ? "Microsoft Edge" : "Google Chrome"} for Teams sign-in…\n`);
-      const session = await login(paths, options);
+      const session = await runWithStatus(program, false, "Signing in…", () => login(paths, options));
       process.stdout.write(`Logged in to tenant ${session.tenantId}.\n`);
     });
 
@@ -255,7 +329,7 @@ export function createProgram(): Command {
         .default("all"),
     )
     .action(async (target: RefreshTarget) => {
-      const result = await refreshTokens(paths, target);
+      const result = await runWithStatus(program, false, `Refreshing ${target} token${target === "all" ? "s" : ""}…`, () => refreshTokens(paths, target));
       process.stdout.write(renderRefreshResult(result));
     });
 
@@ -263,7 +337,7 @@ export function createProgram(): Command {
     .command("whoami")
     .description("Validate the saved session and show its user and token expiry")
     .action(async () => {
-      const session = await validateSession(paths);
+      const session = await runWithStatus(program, false, "Validating session…", () => validateSession(paths));
       outputWhoami(describeSession(session));
     });
 
@@ -290,38 +364,53 @@ export function createProgram(): Command {
       process.stdout.write("Logged out. Local Teams tokens and browser profiles were removed.\n");
     });
 
-  const chats = program.command("chats").description("Read Microsoft Teams chats and messages");
-
-  chats
+  const chat = program.command("chat").description("Read Microsoft Teams chats");
+  chat
     .command("list")
     .description("List the server-provided chat collection and participants")
     .option("--cursor <cursor>", "Opaque cursor returned by the previous page")
     .option("--json", "Output stable JSON")
     .action(async (options: { cursor?: string; json?: boolean }) => {
-      const result = await withDataSession(paths, "chat", (session) =>
-        listChats(session, options.cursor));
+      const result = await runWithStatus(program, options.json ?? false, "Loading chats…", () =>
+        withDataSession(paths, ["chat", "skype"], (session) => listChats(session, options.cursor)));
       writeData(result, renderChats(result), options.json ?? false);
     });
-
-  chats
-    .command("find")
-    .description("Find chats by chat name or participant using Teams GoTo search")
-    .argument("<query>", "Chat name or participant query")
-    .option("--json", "Output stable JSON")
-    .action(async (query: string, options: { json?: boolean }) => {
-      const result = await withDataSession(paths, "search", (session) =>
-        findChats(session, query));
-      writeData(result, renderChats(result), options.json ?? false);
-    });
-
-  chats
-    .command("messages")
-    .description("List a server-provided page of messages in a chat")
+  chat
+    .command("get")
+    .description("Get one chat by ID")
     .argument("<chat-id>", "Teams chat ID")
+    .option("--json", "Output stable JSON")
+    .action(async (chatId: string, options: { json?: boolean }) => {
+      const result = await runWithStatus(program, options.json ?? false, "Loading chat…", () =>
+        withDataSession(paths, ["chat", "skype"], (session) => getChat(session, chatId)));
+      writeData(result, renderChatResult(result), options.json ?? false);
+    });
+
+  const channel = program.command("channel").description("Read Microsoft Teams channels");
+  channel.command("list").description("List channels across available teams")
+    .option("--json", "Output stable JSON")
+    .action(async (options: { json?: boolean }) => {
+      const result = await runWithStatus(program, options.json ?? false, "Loading channels…", () =>
+        withDataSession(paths, ["chat", "skype"], (session) => listChannels(session)));
+      writeData(result, renderChannels(result), options.json ?? false);
+    });
+  channel.command("get").description("Get one channel by ID")
+    .argument("<channel-id>", "Teams channel ID")
+    .option("--json", "Output stable JSON")
+    .action(async (channelId: string, options: { json?: boolean }) => {
+      const result = await runWithStatus(program, options.json ?? false, "Loading channel…", () =>
+        withDataSession(paths, ["chat", "skype"], (session) => getChannel(session, channelId)));
+      writeData(result, renderChannelResult(result), options.json ?? false);
+    });
+
+  const message = program.command("message").description("Read and send Microsoft Teams messages");
+  message.command("list").description("List a server-provided page of messages")
+    .option("--chat <chat-id>", "Target chat ID")
+    .option("--channel <channel-id>", "Target channel ID")
     .option("--page-size <number>", "Server page size from 1 to 200", parsePageSize)
     .option("--cursor <cursor>", "Opaque cursor returned by the previous page")
     .option("--json", "Output stable JSON")
-    .action(async (chatId: string, options: {
+    .action(async (options: TargetOptions & {
       pageSize?: number;
       cursor?: string;
       json?: boolean;
@@ -329,21 +418,42 @@ export function createProgram(): Command {
       if (options.cursor && options.pageSize !== undefined) {
         throw new Error("--cursor cannot be combined with --page-size");
       }
-      const result = await withDataSession(paths, "skype", (session) =>
-        listMessages(session, chatId, options));
+      const target = selectedTarget(options);
+      const result = await runWithStatus(program, options.json ?? false, "Fetching messages…", () =>
+        withDataSession(paths, "skype", (session) => listMessages(session, target, options)));
       writeData(result, renderMessages(result), options.json ?? false);
     });
-
-  chats
-    .command("message")
-    .description("Get one message from a chat by ID")
-    .argument("<chat-id>", "Teams chat ID")
+  message.command("get").description("Get one message by ID")
     .argument("<message-id>", "Teams message ID")
+    .option("--chat <chat-id>", "Target chat ID")
+    .option("--channel <channel-id>", "Target channel ID")
     .option("--json", "Output stable JSON")
-    .action(async (chatId: string, messageId: string, options: { json?: boolean }) => {
-      const result = await withDataSession(paths, "skype", (session) =>
-        getMessage(session, chatId, messageId));
+    .action(async (messageId: string, options: TargetOptions & { json?: boolean }) => {
+      const target = selectedTarget(options);
+      const result = await runWithStatus(program, options.json ?? false, "Fetching message…", () =>
+        withDataSession(paths, "skype", (session) => getMessage(session, target, messageId)));
       writeData(result, renderMessageResult(result), options.json ?? false);
+    });
+  message.command("send").description("Send one allowlisted plain-text message")
+    .option("--chat <chat-id>", "Target chat ID")
+    .option("--channel <channel-id>", "Target channel ID")
+    .option("--body <text>", "Plain-text message body; otherwise read stdin")
+    .option("--json", "Output stable JSON")
+    .action(async (options: TargetOptions & { body?: string; json?: boolean }) => {
+      const target = selectedTarget(options);
+      const body = await messageBody(options.body);
+      const requestId = `${Date.now()}${randomInt(1_000_000).toString().padStart(6, "0")}`;
+      const sessionId = randomUUID();
+      const result = await runWithStatus(program, options.json ?? false, "Sending message…", async () => {
+        await requireAllowedTarget(paths, target);
+        return withDataSession(
+          paths,
+          "skype",
+          (session) => sendMessage(session, target, body, requestId, sessionId),
+          () => requireAllowedTarget(paths, target),
+        );
+      });
+      writeData(result, renderMessageSendResult(result), options.json ?? false);
     });
 
   return program;

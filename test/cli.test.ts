@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { createProgram, renderRefreshResult, renderTokens } from "../src/cli.js";
+import { createProgram, renderRefreshResult, renderTokens, selectedTarget } from "../src/cli.js";
 import type { StoredSession } from "../src/storage.js";
 
 function jwt(payload: object): string {
@@ -20,17 +20,28 @@ const session: StoredSession = {
   endpoints: { chatService: "https://emea.ng.msg.teams.microsoft.com" },
 };
 
-test("exposes auth and chat command groups", () => {
+test("exposes the final auth, chat, channel, and message command groups", () => {
   const program = createProgram();
-  assert.deepEqual(program.commands.map((command) => command.name()), ["auth", "chats"]);
+  assert.deepEqual(program.commands.map((command) => command.name()), ["auth", "chat", "channel", "message"]);
   assert.deepEqual(
     program.commands[0]?.commands.map((command) => command.name()),
     ["login", "refresh", "whoami", "tokens", "logout"],
   );
+  assert.deepEqual(program.commands[1]?.commands.map((command) => command.name()), ["list", "get"]);
+  assert.deepEqual(program.commands[2]?.commands.map((command) => command.name()), ["list", "get"]);
+  assert.deepEqual(program.commands[3]?.commands.map((command) => command.name()), ["list", "get", "send"]);
+  assert.equal(program.commands.some((command) => command.name() === "chats"), false);
 });
 
 test("shows an individual raw token without labels for piping", () => {
   assert.equal(renderTokens(session, "access", false), `${session.accessToken.value}\n`);
+});
+
+test("requires exactly one direct message target", () => {
+  assert.deepEqual(selectedTarget({ chat: "chat-1" }), { kind: "chat", id: "chat-1" });
+  assert.deepEqual(selectedTarget({ channel: "channel-1" }), { kind: "channel", id: "channel-1" });
+  assert.throws(() => selectedTarget({}), /Exactly one/);
+  assert.throws(() => selectedTarget({ chat: "chat-1", channel: "channel-1" }), /Exactly one/);
 });
 
 test("decodes JWT claims without showing the header or signature", () => {

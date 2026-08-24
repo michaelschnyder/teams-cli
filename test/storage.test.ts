@@ -30,6 +30,7 @@ test("partitions auth and browser state below a replaceable storage root", async
   try {
     const paths = storagePaths(root);
     assert.equal(paths.sessionFile, join(root, "auth", "session.json"));
+    assert.equal(paths.guardrailsFile, join(root, "guardrails.json"));
     assert.equal(paths.browserProfile("edge"), join(root, "browser-profiles", "edge"));
     assert.equal(paths.browserProfile("chrome"), join(root, "browser-profiles", "chrome"));
 

@@ -357,11 +357,11 @@ export async function ensureDataSession(
   dependencies = defaultDependencies,
 ): Promise<StoredSession> {
   const session = requireCurrentSession(await loadSession(paths));
-  if (secondsUntil(tokenForTarget(session, target).expiresAt, dependencies.now()) > 0) {
+  if (secondsUntil(tokenForTarget(session, target).expiresAt, dependencies.now()) > 60) {
     return session;
   }
-  if (target === "skype" && secondsUntil(session.accessToken.expiresAt, dependencies.now()) === 0) {
-    return (await refreshTokens(paths, "all", dependencies)).after;
+  if (target === "skype" && secondsUntil(session.accessToken.expiresAt, dependencies.now()) <= 60) {
+    await refreshTokens(paths, "access", dependencies);
   }
   return (await refreshTokens(paths, target, dependencies)).after;
 }

@@ -1,4 +1,5 @@
 import { TEAMS_AUTHZ_URL } from "./constants.js";
+import { observedFetch } from "./diagnostics.js";
 
 type AuthzPayload = {
   tokens?: { skypeToken?: string; expiresIn?: number };
@@ -34,7 +35,7 @@ export class TeamsAuthError extends Error {
 }
 
 export async function exchangeInitialToken(initialToken: string): Promise<TeamsSession> {
-  const response = await fetch(TEAMS_AUTHZ_URL, {
+  const response = await observedFetch(fetch, TEAMS_AUTHZ_URL, {
     method: "POST",
     headers: {
       authorization: `Bearer ${initialToken}`,

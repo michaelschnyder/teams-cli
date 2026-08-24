@@ -39,6 +39,7 @@ export type AnyStoredSession = LegacyStoredSession | StoredSession;
 
 export type StoragePaths = {
   root: string;
+  guardrailsFile: string;
   authDirectory: string;
   sessionFile: string;
   browserProfilesDirectory: string;
@@ -50,6 +51,7 @@ export function storagePaths(root = join(homedir(), ".teams-cli")): StoragePaths
   const browserProfilesDirectory = join(root, "browser-profiles");
   return {
     root,
+    guardrailsFile: join(root, "guardrails.json"),
     authDirectory,
     sessionFile: join(authDirectory, "session.json"),
     browserProfilesDirectory,

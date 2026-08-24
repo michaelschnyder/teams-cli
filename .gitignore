@@ -2,3 +2,4 @@ node_modules/
 dist/
 .state/
 *.log
+*.DS_Store

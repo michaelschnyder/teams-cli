@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import {
   describeSession,
+  ensureDataSession,
   refreshTokens,
   validateSession,
   type AuthDependencies,
@@ -183,6 +184,42 @@ test("refreshes only the Skype token when the access token is valid", async () =
     assert.equal(refreshed.before.skypeToken.value, oldSkype);
     assert.equal(refreshed.after.accessToken.value, access);
     assert.equal(refreshed.after.skypeToken.value, freshSkype);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("refreshes a data token within the sixty-second expiry skew", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-cli-refresh-skew-"));
+  try {
+    const paths = storagePaths(root);
+    const now = new Date("2026-08-18T00:00:00.000Z");
+    const freshChat = jwt({ tid: "tenant", exp: Math.floor(now.getTime() / 1000) + 3600 });
+    await saveSession(paths, {
+      version: 2,
+      browser: "edge",
+      tenantId: "tenant",
+      savedAt: now.toISOString(),
+      region: "emea",
+      accessToken: { value: jwt({ tid: "tenant" }), expiresAt: "2027-01-01T00:00:00.000Z" },
+      skypeToken: { value: jwt({ tid: "tenant" }), expiresAt: "2027-01-01T00:00:00.000Z" },
+      chatToken: { value: jwt({ tid: "tenant" }), expiresAt: "2026-08-18T00:00:59.000Z" },
+      searchToken: { value: jwt({ tid: "tenant" }), expiresAt: "2027-01-01T00:00:00.000Z" },
+      endpoints: { chatService: "https://emea.ng.msg.teams.microsoft.com" },
+    });
+    let acquisitions = 0;
+    const dependencies: AuthDependencies = {
+      now: () => now,
+      acquireTokens: async (resources) => {
+        acquisitions += 1;
+        assert.deepEqual(resources, [CHAT_SVC_AGG_RESOURCE]);
+        return { tokens: new Map([[CHAT_SVC_AGG_RESOURCE, freshChat]]), close: async () => undefined };
+      },
+      exchangeToken: async () => { throw new Error("chat refresh must not exchange Skype"); },
+    };
+    const refreshed = await ensureDataSession(paths, "chat", dependencies);
+    assert.equal(acquisitions, 1);
+    assert.equal(refreshed.chatToken.value, freshChat);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

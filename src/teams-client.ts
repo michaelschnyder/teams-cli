@@ -1,10 +1,8 @@
-import { randomUUID } from "node:crypto";
-import {
-  OUTLOOK_SEARCH_URL,
-  TEAMS_WEB_ORIGIN,
-} from "./constants.js";
+import { TEAMS_WEB_ORIGIN } from "./constants.js";
 import { readJwtMetadata } from "./jwt.js";
 import type { StoredSession } from "./storage.js";
+import { observedFetch } from "./diagnostics.js";
+import type { MessageTarget } from "./guardrails.js";
 
 type DataTokenTarget = "skype" | "chat" | "search";
 
@@ -40,6 +38,13 @@ export type ChatSummary = {
   participantCount: number;
 };
 
+export type ChannelSummary = {
+  id: string;
+  name: string;
+  description: string | null;
+  team: { id: string; name: string };
+};
+
 export type MessageSummary = {
   id: string;
   chatId: string;
@@ -60,9 +65,12 @@ export type MessageSummary = {
 
 export type PageInfo = { nextCursor: string | null };
 export type ChatPage = { chats: ChatSummary[]; page: PageInfo };
-export type ChatSearchResult = { query: string; chats: ChatSummary[]; page: PageInfo };
-export type MessagePage = { chatId: string; messages: MessageSummary[]; page: PageInfo };
-export type MessageResult = { chatId: string; message: MessageSummary };
+export type ChannelList = { channels: ChannelSummary[] };
+export type ChatResult = { chat: ChatSummary };
+export type ChannelResult = { channel: ChannelSummary };
+export type MessagePage = { target: MessageTarget; messages: MessageSummary[]; page: PageInfo };
+export type MessageResult = { target: MessageTarget; message: MessageSummary };
+export type MessageSendResult = { target: MessageTarget; message: MessageSummary | null };
 
 type Cursor =
   | { version: 1; kind: "chats"; tenantId: string; syncToken: string }
@@ -101,6 +109,9 @@ type RawChat = {
   lastMessage?: { composeTime?: unknown; originalArrivalTime?: unknown };
   LastMessageTime?: unknown;
 };
+
+type RawChannel = { id?: unknown; threadId?: unknown; name?: unknown; displayName?: unknown; description?: unknown };
+type RawTeam = { id?: unknown; threadId?: unknown; name?: unknown; displayName?: unknown; channels?: unknown };
 
 type RawMessage = Record<string, unknown> & {
   id?: unknown;
@@ -197,6 +208,32 @@ function normalizeChat(value: unknown, userNames = new Map<string, string>()): C
   };
 }
 
+function normalizeChannels(value: unknown): ChannelSummary[] {
+  if (!Array.isArray(value)) return [];
+  const channels: ChannelSummary[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const team = entry as RawTeam;
+    const teamId = stringValue(team.id) ?? stringValue(team.threadId);
+    const teamName = stringValue(team.name) ?? stringValue(team.displayName) ?? teamId;
+    if (!teamId || !teamName || !Array.isArray(team.channels)) continue;
+    for (const item of team.channels) {
+      if (!item || typeof item !== "object") continue;
+      const channel = item as RawChannel;
+      const id = stringValue(channel.id) ?? stringValue(channel.threadId);
+      const name = stringValue(channel.name) ?? stringValue(channel.displayName) ?? id;
+      if (!id || !name) continue;
+      channels.push({
+        id,
+        name,
+        description: stringValue(channel.description),
+        team: { id: teamId, name: teamName },
+      });
+    }
+  }
+  return channels;
+}
+
 function normalizeMessage(value: unknown, fallbackChatId: string): MessageSummary | null {
   if (!value || typeof value !== "object") return null;
   const message = value as RawMessage;
@@ -280,7 +317,7 @@ async function jsonResponse(
   if (!response.ok) {
     throw new TeamsApiError(
       response.status,
-      `${operation} failed (${response.status} ${response.statusText}): ${raw.slice(0, 300)}`,
+      `${operation} failed (${response.status} ${response.statusText})`,
       tokenTarget,
     );
   }
@@ -303,7 +340,7 @@ export async function listChats(
     requireCursorTenant(cursor, session);
     syncToken = cursor.syncToken;
   }
-  const response = await fetchImplementation(csaUrl(session, Boolean(syncToken)), {
+  const response = await observedFetch(fetchImplementation, csaUrl(session, Boolean(syncToken)), {
     headers: {
       authorization: `Bearer ${session.chatToken.value}`,
       "x-skypetoken": session.skypeToken.value,
@@ -346,98 +383,56 @@ export async function listChats(
   return { chats, page: { nextCursor } };
 }
 
-export async function findChats(
+async function discoveryPayload(
   session: StoredSession,
-  query: string,
-  fetchImplementation: typeof fetch = fetch,
-): Promise<ChatSearchResult> {
-  const trimmed = query.trim();
-  if (!trimmed) throw new Error("Chat search query must not be empty");
-  const url = new URL(OUTLOOK_SEARCH_URL);
-  url.searchParams.set("scenario", "powerbar");
-  const response = await fetchImplementation(url, {
-    method: "POST",
+  fetchImplementation: typeof fetch,
+): Promise<{ chats?: unknown; users?: unknown; teams?: unknown }> {
+  const response = await observedFetch(fetchImplementation, csaUrl(session, false), {
     headers: {
-      authorization: `Bearer ${session.searchToken.value}`,
-      "content-type": "application/json",
+      authorization: `Bearer ${session.chatToken.value}`,
+      "x-skypetoken": session.skypeToken.value,
       accept: "application/json",
     },
-    body: JSON.stringify({
-      EntityRequests: ["People", "Chat"].map((EntityType) => ({
-        Query: {
-          QueryString: trimmed,
-          DisplayQueryString: trimmed,
-          NormalizedQueryString: trimmed,
-        },
-        EntityType,
-        Size: 25,
-      })),
-      Scenario: { Name: "powerbar", Dimensions: [] },
-      Cvid: randomUUID(),
-      AppName: "Microsoft Teams",
-      LogicalId: randomUUID(),
-      dataSource: "personScoped",
-    }),
   });
-  const payload = await jsonResponse(response, "Chat search", "search") as {
-    Groups?: Array<{ Type?: unknown; Suggestions?: unknown }>;
+  return await jsonResponse(response, "Teams discovery", "chat") as {
+    chats?: unknown;
+    users?: unknown;
+    teams?: unknown;
   };
-  const chatGroup = payload.Groups?.find((candidate) => candidate.Type === "Chat");
-  const chats = Array.isArray(chatGroup?.Suggestions)
-    ? chatGroup.Suggestions
-      .map((chat) => normalizeChat(chat))
-      .filter((chat): chat is ChatSummary => chat !== null)
-    : [];
-  const peopleGroup = payload.Groups?.find((candidate) => candidate.Type === "People");
-  const people = Array.isArray(peopleGroup?.Suggestions) ? peopleGroup.Suggestions : [];
-  const directChats = await Promise.all(people.map(async (value): Promise<ChatSummary | null> => {
-    if (!value || typeof value !== "object") return null;
-    const person = value as RawParticipant;
-    const participant = normalizeParticipant(person);
-    if (!participant || !participant.id.startsWith("8:orgid:")) return null;
-    const ownObjectId = readJwtMetadata(session.accessToken.value).userId;
-    if (!ownObjectId) throw new Error("The saved access token has no user object ID");
-    const otherObjectId = participant.id.slice("8:orgid:".length);
-    const candidateIds = [
-      `19:${otherObjectId}_${ownObjectId}@unq.gbl.spaces`,
-      `19:${ownObjectId}_${otherObjectId}@unq.gbl.spaces`,
-    ];
-    for (const chatId of candidateIds) {
-      const url = new URL(
-        `/v1/users/ME/conversations/${encodeURIComponent(chatId)}`,
-        session.endpoints.chatService,
-      );
-      const lookup = await fetchImplementation(url, {
-        headers: {
-          authentication: `skypetoken=${session.skypeToken.value}`,
-          accept: "application/json",
-        },
-      });
-      if (lookup.status === 404) continue;
-      const conversation = await jsonResponse(lookup, "Direct chat lookup", "skype") as {
-        lastMessage?: { composetime?: unknown; originalarrivaltime?: unknown };
-      };
-      return {
-        id: chatId,
-        title: participant.displayName ?? participant.id,
-        type: "Chat",
-        oneOnOne: true,
-        hidden: false,
-        disabled: false,
-        read: null,
-        lastActivity: stringValue(conversation.lastMessage?.composetime) ??
-          stringValue(conversation.lastMessage?.originalarrivaltime),
-        participants: [participant],
-        participantCount: 2,
-      };
-    }
-    return null;
-  }));
-  return {
-    query: trimmed,
-    chats: [...directChats.filter((chat): chat is ChatSummary => chat !== null), ...chats],
-    page: { nextCursor: null },
-  };
+}
+
+export async function getChat(
+  session: StoredSession,
+  chatId: string,
+  fetchImplementation: typeof fetch = fetch,
+): Promise<ChatResult> {
+  let cursor: string | undefined;
+  do {
+    const result = await listChats(session, cursor, fetchImplementation);
+    const chat = result.chats.find((candidate) => candidate.id === chatId);
+    if (chat) return { chat };
+    cursor = result.page.nextCursor ?? undefined;
+  } while (cursor);
+  throw new Error(`Chat not found: ${chatId}`);
+}
+
+export async function listChannels(
+  session: StoredSession,
+  fetchImplementation: typeof fetch = fetch,
+): Promise<ChannelList> {
+  const payload = await discoveryPayload(session, fetchImplementation);
+  return { channels: normalizeChannels(payload.teams) };
+}
+
+export async function getChannel(
+  session: StoredSession,
+  channelId: string,
+  fetchImplementation: typeof fetch = fetch,
+): Promise<ChannelResult> {
+  const result = await listChannels(session, fetchImplementation);
+  const channel = result.channels.find((candidate) => candidate.id === channelId);
+  if (!channel) throw new Error(`Channel not found: ${channelId}`);
+  return { channel };
 }
 
 export type MessagePageOptions = {
@@ -475,14 +470,14 @@ function continuedMessageUrl(session: StoredSession, chatId: string, encoded: st
 
 export async function listMessages(
   session: StoredSession,
-  chatId: string,
+  target: MessageTarget,
   options: MessagePageOptions,
   fetchImplementation: typeof fetch = fetch,
 ): Promise<MessagePage> {
   const url = options.cursor
-    ? continuedMessageUrl(session, chatId, options.cursor)
-    : initialMessageUrl(session, chatId, options);
-  const response = await fetchImplementation(url, {
+    ? continuedMessageUrl(session, target.id, options.cursor)
+    : initialMessageUrl(session, target.id, options);
+  const response = await observedFetch(fetchImplementation, url, {
     headers: {
       authentication: `skypetoken=${session.skypeToken.value}`,
       accept: "application/json",
@@ -494,7 +489,7 @@ export async function listMessages(
   };
   const messages = Array.isArray(payload.messages)
     ? payload.messages
-      .map((message) => normalizeMessage(message, chatId))
+      .map((message) => normalizeMessage(message, target.id))
       .filter((message): message is MessageSummary => message !== null)
     : [];
   const backwardLink = stringValue(payload._metadata?.backwardLink);
@@ -503,31 +498,84 @@ export async function listMessages(
       version: 1,
       kind: "messages",
       tenantId: session.tenantId,
-      chatId,
+      chatId: target.id,
       url: backwardLink,
     })
     : null;
-  return { chatId, messages, page: { nextCursor } };
+  return { target, messages, page: { nextCursor } };
 }
 
 export async function getMessage(
   session: StoredSession,
-  chatId: string,
+  target: MessageTarget,
   messageId: string,
   fetchImplementation: typeof fetch = fetch,
 ): Promise<MessageResult> {
   const url = new URL(
-    `${messagePath(chatId)}/${encodeURIComponent(messageId)}`,
+    `${messagePath(target.id)}/${encodeURIComponent(messageId)}`,
     session.endpoints.chatService,
   );
-  const response = await fetchImplementation(url, {
+  const response = await observedFetch(fetchImplementation, url, {
     headers: {
       authentication: `skypetoken=${session.skypeToken.value}`,
       accept: "application/json",
     },
   });
   const payload = await jsonResponse(response, "Message lookup", "skype") as { message?: unknown };
-  const message = normalizeMessage(payload.message ?? payload, chatId);
+  const message = normalizeMessage(payload.message ?? payload, target.id);
   if (!message) throw new Error("Message lookup returned no message");
-  return { chatId, message };
+  return { target, message };
+}
+
+export async function sendMessage(
+  session: StoredSession,
+  target: MessageTarget,
+  content: string,
+  requestId: string,
+  sessionId: string,
+  fetchImplementation: typeof fetch = fetch,
+): Promise<MessageSendResult> {
+  const plainTextAsHtml = content
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;")
+    .replaceAll(/\r?\n/g, "<br>");
+  const displayName = readJwtMetadata(session.accessToken.value).name ?? "";
+  const response = await observedFetch(fetchImplementation, new URL(messagePath(target.id), session.endpoints.chatService), {
+    method: "POST",
+    headers: {
+      authentication: `skypetoken=${session.skypeToken.value}`,
+      "x-ms-session-id": sessionId,
+      "content-type": "application/json",
+      accept: "application/json",
+    },
+    body: JSON.stringify({
+      clientmessageid: requestId,
+      content: `<p>${plainTextAsHtml}</p>`,
+      contenttype: "text",
+      messagetype: "RichText/Html",
+      amsreferences: [],
+      imdisplayname: displayName,
+      properties: { importance: "", subject: "" },
+    }),
+  });
+  if (!response.ok) {
+    throw new TeamsApiError(
+      response.status,
+      `Message send failed (${response.status} ${response.statusText})`,
+      "skype",
+    );
+  }
+  const raw = await response.text();
+  if (!raw.trim()) return { target, message: null };
+  let payload: { message?: unknown };
+  try {
+    payload = JSON.parse(raw) as { message?: unknown };
+  } catch {
+    return { target, message: null };
+  }
+  const message = normalizeMessage(payload.message ?? payload, target.id);
+  return { target, message };
 }
