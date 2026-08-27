@@ -16,11 +16,13 @@ import { TeamsApiError } from "./teams-client.js";
 const REFRESH_SKEW_SECONDS = 60;
 
 function tokenForTarget(session: StoredSession, target: DataTokenTarget): StoredToken {
-  return target === "skype"
-    ? session.skypeToken
-    : target === "chat"
-      ? session.chatToken
-      : session.searchToken;
+  return target === "access"
+    ? session.accessToken
+    : target === "skype"
+      ? session.skypeToken
+      : target === "chat"
+        ? session.chatToken
+        : session.searchToken;
 }
 
 function label(target: DataTokenTarget | "access"): string {

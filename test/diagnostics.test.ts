@@ -32,6 +32,18 @@ test("debug request output redacts identifiers and query values", async () => {
   assert.doesNotMatch(output, /secret-chat|secret-message|token=secret/);
 });
 
+test("debug request output redacts person identifiers", async () => {
+  const output = await captureStderr(async () => {
+    configureDiagnostics({ progress: false, debug: true });
+    await observedFetch(
+      async () => new Response("{}", { status: 200 }),
+      "https://teams.microsoft.com/api/mt/emea/beta/users/ada%40example.com/profilepicture?displayname=Ada",
+    );
+  });
+  assert.match(output, /users\/<redacted>\/profilepicture/);
+  assert.doesNotMatch(output, /ada|displayname/i);
+});
+
 test("disabled progress writes no status output", async () => {
   const output = await captureStderr(() => {
     configureDiagnostics({ progress: false, debug: false });

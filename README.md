@@ -1,6 +1,6 @@
 # Teams CLI
 
-A minimal TypeScript CLI that signs in through Microsoft Edge or Google Chrome, persists a Microsoft Teams session, reads chats, channels, and messages, and can send plain-text messages to explicitly allowlisted conversations.
+A minimal TypeScript CLI that signs in through Microsoft Edge or Google Chrome, persists a Microsoft Teams session, looks up people, reads chats, channels, and messages, and can send plain-text messages to explicitly allowlisted conversations.
 
 This uses undocumented Teams behavior and Microsoft's first-party client identity. It is unsupported, may be blocked by tenant policy, and may stop working without notice. Obtain approval from your organization before using it.
 
@@ -40,6 +40,44 @@ teams-cli auth tokens --decode
 ```
 
 Treat raw bearer tokens like passwords. They may be captured by terminal scrollback, logs, or automation output. Logout removes local tokens and dedicated browser profiles; it does not revoke tokens remotely.
+
+## People
+
+Search for people with compact human output or stable JSON:
+
+```bash
+teams-cli person search "Ada Lovelace"
+teams-cli person search "ada@example.com" --json
+```
+
+Search preserves the service's ranking and returns up to 25 people. Each result has a
+stable person ID plus nullable display name, MRI, email, and job title fields. It does
+not locally search, sort, page, or cache the directory.
+
+Get a richer profile by email address, object ID, or Teams MRI:
+
+```bash
+teams-cli person get ada@example.com
+teams-cli person get 8:orgid:00000000-0000-0000-0000-000000000000 --json
+```
+
+Detailed profiles include available name and email variants, job title, department,
+office, phone, tenant, user type, account state, and Teams eligibility. Missing
+upstream values are returned as `null` in JSON.
+
+Profile images require authentication, so the CLI streams them instead of exposing an
+unusable private URL:
+
+```bash
+teams-cli person image ada@example.com > ada.jpg
+teams-cli person image ada@example.com --size 240 > ada-240.jpg
+teams-cli person image 00000000-0000-0000-0000-000000000000 --base64
+```
+
+Raw image output must be redirected or piped. `--base64` emits one base64 line for
+agents and other structured consumers. Image size defaults to `max`; supported values
+are `48`, `64`, `96`, `120`, `240`, `360`, `432`, `504`, `648`, and `max`. Microsoft
+returns the largest stored photo when the requested resolution is unavailable.
 
 ## Chats and channels
 

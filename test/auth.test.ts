@@ -224,3 +224,36 @@ test("refreshes a data token within the sixty-second expiry skew", async () => {
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("refreshes the access token used by person profile operations", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-cli-refresh-person-access-"));
+  try {
+    const paths = storagePaths(root);
+    const now = new Date("2026-08-18T00:00:00.000Z");
+    const freshAccess = jwt({ tid: "tenant", exp: Math.floor(now.getTime() / 1000) + 3600 });
+    await saveSession(paths, {
+      version: 2,
+      browser: "edge",
+      tenantId: "tenant",
+      savedAt: now.toISOString(),
+      region: "emea",
+      accessToken: { value: jwt({ tid: "tenant" }), expiresAt: "2026-08-18T00:00:59.000Z" },
+      skypeToken: { value: jwt({ tid: "tenant" }), expiresAt: "2027-01-01T00:00:00.000Z" },
+      chatToken: { value: jwt({ tid: "tenant" }), expiresAt: "2027-01-01T00:00:00.000Z" },
+      searchToken: { value: jwt({ tid: "tenant" }), expiresAt: "2027-01-01T00:00:00.000Z" },
+      endpoints: { chatService: "https://emea.ng.msg.teams.microsoft.com" },
+    });
+    const dependencies: AuthDependencies = {
+      now: () => now,
+      acquireTokens: async (resources) => {
+        assert.deepEqual(resources, [SKYPE_RESOURCE]);
+        return { tokens: new Map([[SKYPE_RESOURCE, freshAccess]]), close: async () => undefined };
+      },
+      exchangeToken: async () => { throw new Error("access refresh must not exchange Skype"); },
+    };
+    const refreshed = await ensureDataSession(paths, "access", dependencies);
+    assert.equal(refreshed.accessToken.value, freshAccess);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

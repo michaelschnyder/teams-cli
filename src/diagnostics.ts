@@ -32,7 +32,7 @@ export function clearStatus(): void {
 function sanitizedUrl(input: string | URL | Request): string {
   const url = new URL(input instanceof Request ? input.url : input.toString());
   const parts = url.pathname.split("/").map((part, index, all) =>
-    all[index - 1] === "conversations" || all[index - 1] === "messages"
+    all[index - 1] === "conversations" || all[index - 1] === "messages" || all[index - 1] === "users"
       ? "<redacted>"
       : part);
   return `${url.origin}${parts.join("/")}`;

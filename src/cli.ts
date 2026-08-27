@@ -31,10 +31,13 @@ import {
   getChannel,
   getChat,
   getMessage,
+  getPerson,
+  getPersonImage,
   listChannels,
   listChats,
   listMessages,
   sendMessage,
+  searchPeople,
   type ChannelList,
   type ChannelResult,
   type ChatPage,
@@ -44,6 +47,10 @@ import {
   type MessageResult,
   type MessageSendResult,
   type MessageSummary,
+  type PersonImage,
+  type PersonImageSize,
+  type PersonResult,
+  type PersonSearchResult,
 } from "./teams-client.js";
 
 type TokenTarget = "all" | "access" | "skype" | "chat" | "search";
@@ -245,6 +252,56 @@ function renderMessageSendResult(result: MessageSendResult): string {
   return `Sent message${identifier} to ${result.target.kind} ${result.target.id}.\n`;
 }
 
+export function renderPeople(result: PersonSearchResult): string {
+  const rows = result.people.map((person) => [
+    fitCell(person.displayName ?? "", 40),
+    fitCell(person.jobTitle ?? "", 40),
+    fitCell(person.email ?? "", 48),
+    person.id,
+  ]);
+  const lines = [`People (${result.people.length})`];
+  if (rows.length) lines.push(...renderTable(rows, ["Name", "Job title", "Email", "Person ID"]));
+  return `${lines.join("\n")}\n`;
+}
+
+export function renderPerson(result: PersonResult): string {
+  const person = result.person;
+  const phones = person.phones.map((phone) =>
+    `${phone.type ? `${phone.type}: ` : ""}${phone.number}`);
+  return `${[
+    person.displayName ?? "unknown",
+    `Person ID: ${person.id}`,
+    `MRI: ${person.mri ?? ""}`,
+    `Given name: ${person.givenName ?? ""}`,
+    `Surname: ${person.surname ?? ""}`,
+    `Email: ${person.email ?? ""}`,
+    `Mail: ${person.mail ?? ""}`,
+    `User principal name: ${person.userPrincipalName ?? ""}`,
+    `SMTP addresses: ${person.smtpAddresses.join(", ")}`,
+    `Job title: ${person.jobTitle ?? ""}`,
+    `Department: ${person.department ?? ""}`,
+    `Office: ${person.officeLocation ?? ""}`,
+    `Mobile: ${person.mobile ?? ""}`,
+    `Telephone: ${person.telephoneNumber ?? ""}`,
+    `Phones: ${phones.join(", ")}`,
+    `Tenant: ${person.tenantName ?? ""}`,
+    `User type: ${person.userType ?? ""}`,
+    `Account enabled: ${person.accountEnabled === null ? "unknown" : String(person.accountEnabled)}`,
+    `Teams enabled: ${person.teamsEnabled === null ? "unknown" : String(person.teamsEnabled)}`,
+  ].join("\n")}\n`;
+}
+
+export function personImageOutput(
+  image: PersonImage,
+  base64: boolean,
+  stdoutIsTTY: boolean,
+): Buffer {
+  if (!base64 && stdoutIsTTY) {
+    throw new Error("Refusing to write a raw profile image to an interactive terminal. Pipe it to a file or use --base64.");
+  }
+  return base64 ? Buffer.from(`${image.data.toString("base64")}\n`, "utf8") : image.data;
+}
+
 function writeData(value: unknown, human: string, json: boolean): void {
   process.stdout.write(json ? `${JSON.stringify(value, null, 2)}\n` : human);
 }
@@ -362,6 +419,44 @@ export function createProgram(): Command {
     .action(async () => {
       await logout(paths);
       process.stdout.write("Logged out. Local Teams tokens and browser profiles were removed.\n");
+    });
+
+  const person = program.command("person").description("Search and inspect Microsoft Teams people");
+  person.command("search")
+    .description("Search for people by name or email")
+    .argument("<query>", "Person name or email query")
+    .option("--json", "Output stable JSON")
+    .action(async (query: string, options: { json?: boolean }) => {
+      const result = await runWithStatus(program, options.json ?? false, "Searching for people…", () =>
+        withDataSession(paths, "search", (session) => searchPeople(session, query)));
+      writeData(result, renderPeople(result), options.json ?? false);
+    });
+  person.command("get")
+    .description("Get a detailed person profile by email, object ID, or MRI")
+    .argument("<email-or-id>", "Email address, object ID, or Teams MRI")
+    .option("--json", "Output stable JSON")
+    .action(async (identifier: string, options: { json?: boolean }) => {
+      const result = await runWithStatus(program, options.json ?? false, "Loading person profile…", () =>
+        withDataSession(paths, "access", (session) => getPerson(session, identifier)));
+      writeData(result, renderPerson(result), options.json ?? false);
+    });
+  person.command("image")
+    .description("Stream a person's authenticated profile image")
+    .argument("<email-or-id>", "Email address, object ID, or Teams MRI")
+    .option("--base64", "Output one base64-encoded line instead of raw image bytes")
+    .addOption(
+      new Option("--size <pixels>", "Requested image size; unavailable sizes fall back")
+        .choices(["48", "64", "96", "120", "240", "360", "432", "504", "648", "max"])
+        .default("max"),
+    )
+    .action(async (identifier: string, options: { base64?: boolean; size: PersonImageSize }) => {
+      const base64 = options.base64 ?? false;
+      if (!base64 && process.stdout.isTTY) {
+        personImageOutput({ data: Buffer.alloc(0), contentType: "application/octet-stream" }, false, true);
+      }
+      const result = await runWithStatus(program, base64, "Loading person image…", () =>
+        withDataSession(paths, "access", (session) => getPersonImage(session, identifier, options.size)));
+      process.stdout.write(personImageOutput(result, base64, Boolean(process.stdout.isTTY)));
     });
 
   const chat = program.command("chat").description("Read Microsoft Teams chats");

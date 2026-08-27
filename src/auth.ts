@@ -65,7 +65,7 @@ export type WhoamiResult = {
 };
 
 export type RefreshTarget = "all" | "access" | "skype" | "chat" | "search";
-export type DataTokenTarget = "skype" | "chat" | "search";
+export type DataTokenTarget = "access" | "skype" | "chat" | "search";
 
 export type RefreshResult = {
   target: RefreshTarget;
@@ -344,11 +344,13 @@ export async function validateSession(
 }
 
 function tokenForTarget(session: StoredSession, target: DataTokenTarget): StoredToken {
-  return target === "skype"
-    ? session.skypeToken
-    : target === "chat"
-      ? session.chatToken
-      : session.searchToken;
+  return target === "access"
+    ? session.accessToken
+    : target === "skype"
+      ? session.skypeToken
+      : target === "chat"
+        ? session.chatToken
+        : session.searchToken;
 }
 
 export async function ensureDataSession(

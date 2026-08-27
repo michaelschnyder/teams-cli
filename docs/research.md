@@ -150,6 +150,11 @@ call the same private services required by that client.
   Chat request size of 25 returned 13 results for `Vlad`, rather than the five returned
   when five were requested. The matching participant is in `MatchingMembers`, outside
   the sampled `ChatMembers` roster.
+- People-only Substrate suggestions provide compact identity, email, and job-title
+  fields for ranked directory lookup without adding a Graph token.
+- The regional Teams middle-tier user endpoint provides detailed directory profiles.
+  Its profile-picture response is authenticated base64 image data, so the CLI must
+  proxy and decode the image rather than expose the endpoint as a public URL.
 - One-to-one conversations are absent from Chat suggestions. A People request returns
   the matching identity MRI. Live conversations use both possible orderings of the
   current and other tenant object IDs, so both candidate one-to-one IDs must be read

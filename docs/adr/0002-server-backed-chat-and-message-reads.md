@@ -1,4 +1,4 @@
-# ADR 0002: Use server-backed private APIs for chat and message reads
+# ADR 0002: Use server-backed private APIs for people, chat, and message reads
 
 - **Status:** Accepted
 - **Date:** 2026-08-14
@@ -6,10 +6,10 @@
 
 ## Context
 
-The CLI needs to enumerate a user's chats and participants, find chats by name or
-participant, page through messages, and retrieve an individual message. The project
-still cannot register an Entra application, so the supported Microsoft Graph chat
-APIs remain unavailable.
+The CLI needs to find people and inspect their profiles, enumerate a user's chats and
+participants, page through messages, and retrieve an individual message. The project
+still cannot register an Entra application, so the supported Microsoft Graph APIs
+remain unavailable.
 
 Teams exposes these capabilities to its web client through undocumented services.
 Live inspection confirmed that chat discovery uses ChatSvcAgg, GoTo uses Substrate
@@ -19,8 +19,17 @@ the requirement that search, paging, sorting, and filtering remain server-backed
 
 ## Decision
 
-Add read-only chat and message commands using the same private services as Teams:
+Add read-only people, chat, and message commands using the same private services as Teams:
 
+- A People-only Substrate suggestions request returns up to 25 server-ranked directory
+  matches for `person search`. The CLI exposes a stable compact summary containing the
+  object ID, MRI, display name, email, and job title without local ranking or paging.
+- The Teams middle-tier user endpoint accepts an email address, object ID, or MRI and
+  returns detailed directory fields for `person get`. Its authenticated profile-picture
+  endpoint returns base64 image data; `person image` decodes and streams those bytes or
+  emits base64 explicitly. Image requests default to the largest supported size and may
+  select a standard Microsoft 365 photo resolution. The service falls back to the largest
+  stored image. The private URL is not presented as a downloadable image URL.
 - The cookie-free CSA v1 endpoint returns chats and embedded participant information.
   Initial discovery uses `/teams/users/me`; subsequent pages use `/updates` with the
   returned sync token in `x-ms-synctoken`. The web client's CSA v3 proxy was evaluated
@@ -96,7 +105,7 @@ server continuation.
 
 ### Positive
 
-- Results and continuation behavior match the services used by Teams.
+- People ranking, results, and continuation behavior match the services used by Teams.
 - Chat participants are available without secondary local joins.
 - Agents can consume deterministic JSON while humans retain readable output.
 - Cursor validation preserves upstream links without accepting arbitrary targets.
@@ -106,6 +115,7 @@ server continuation.
 - All endpoints and payloads are undocumented and can change without notice.
 - Chat and People search have no continuation and may return fewer results than the
   requested size.
+- People profile fields and images may be absent because of tenant data or policy.
 - A saved session contains two additional sensitive bearer tokens.
 - Version-1 users must explicitly refresh all tokens before reading data.
 
