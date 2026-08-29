@@ -25,6 +25,7 @@ import type { StoragePaths } from "./storage.js";
 import { parseStrictYaml, rejectUnknownKeys, requireObject } from "./yaml.js";
 
 export type MessageTarget = { kind: "chat" | "channel"; id: string };
+export type MessageAction = "read" | "post";
 
 export type Policy = {
   version: 1;
@@ -33,8 +34,13 @@ export type Policy = {
   subject: { paths: string[] };
   identity?: { tenantId?: string; userId?: string };
   allow?: {
-    messageSend?: { chats: string[]; channels: string[] };
+    chats?: Record<string, MessageAction[]>;
+    channels?: Record<string, MessageAction[]>;
     rawTokenExport?: boolean;
+  };
+  deny?: {
+    chats?: Record<string, MessageAction[]>;
+    channels?: Record<string, MessageAction[]>;
   };
 };
 
@@ -65,6 +71,25 @@ function optionalString(value: unknown, label: string): string | undefined {
   return value;
 }
 
+function actionMap(value: unknown, label: string): Record<string, MessageAction[]> {
+  const raw = requireObject(value, label);
+  const result: Record<string, MessageAction[]> = Object.create(null) as Record<string, MessageAction[]>;
+  for (const [id, actions] of Object.entries(raw)) {
+    if (!id.length) throw new Error(`${label} IDs must not be empty`);
+    if (!Array.isArray(actions) || actions.length === 0) {
+      throw new Error(`${label}.${id} must contain at least one action`);
+    }
+    if (!actions.every((action) => action === "read" || action === "post")) {
+      throw new Error(`${label}.${id} actions must be read or post`);
+    }
+    if (new Set(actions).size !== actions.length) {
+      throw new Error(`${label}.${id} actions must be unique`);
+    }
+    result[id] = [...actions] as MessageAction[];
+  }
+  return result;
+}
+
 function validatePolicyName(name: string): string {
   if (!POLICY_NAME.test(name)) {
     throw new Error("Policy name must use 1-64 letters, numbers, dots, underscores, or hyphens");
@@ -89,7 +114,7 @@ function validateSubjectPaths(value: unknown): string[] {
 
 export function parsePolicy(value: unknown): Policy {
   const root = requireObject(value, "Policy");
-  rejectUnknownKeys(root, ["version", "name", "active", "subject", "identity", "allow"], "Policy");
+  rejectUnknownKeys(root, ["version", "name", "active", "subject", "identity", "allow", "deny"], "Policy");
   if (root.version !== 1) throw new Error("Policy version must be 1");
   if (typeof root.name !== "string") throw new Error("Policy.name must be a string");
   const name = validatePolicyName(root.name);
@@ -111,23 +136,27 @@ export function parsePolicy(value: unknown): Policy {
   let allow: Policy["allow"];
   if (root.allow !== undefined) {
     const raw = requireObject(root.allow, "Policy.allow");
-    rejectUnknownKeys(raw, ["messageSend", "rawTokenExport"], "Policy.allow");
-    let messageSend: { chats: string[]; channels: string[] } | undefined;
-    if (raw.messageSend !== undefined) {
-      const message = requireObject(raw.messageSend, "Policy.allow.messageSend");
-      rejectUnknownKeys(message, ["chats", "channels"], "Policy.allow.messageSend");
-      messageSend = {
-        chats: stringArray(message.chats, "Policy.allow.messageSend.chats"),
-        channels: stringArray(message.channels, "Policy.allow.messageSend.channels"),
-      };
-    }
+    rejectUnknownKeys(raw, ["chats", "channels", "rawTokenExport"], "Policy.allow");
+    const chats = raw.chats === undefined ? undefined : actionMap(raw.chats, "Policy.allow.chats");
+    const channels = raw.channels === undefined ? undefined : actionMap(raw.channels, "Policy.allow.channels");
     if (raw.rawTokenExport !== undefined && typeof raw.rawTokenExport !== "boolean") {
       throw new Error("Policy.allow.rawTokenExport must be a boolean");
     }
     allow = {
-      ...(messageSend ? { messageSend } : {}),
+      ...(chats ? { chats } : {}),
+      ...(channels ? { channels } : {}),
       ...(typeof raw.rawTokenExport === "boolean" ? { rawTokenExport: raw.rawTokenExport } : {}),
     };
+  }
+
+  let deny: Policy["deny"];
+  if (root.deny !== undefined) {
+    const raw = requireObject(root.deny, "Policy.deny");
+    rejectUnknownKeys(raw, ["chats", "channels"], "Policy.deny");
+    const chats = raw.chats === undefined ? undefined : actionMap(raw.chats, "Policy.deny.chats");
+    const channels = raw.channels === undefined ? undefined : actionMap(raw.channels, "Policy.deny.channels");
+    if (chats?.["*"] || channels?.["*"]) throw new Error("Policy.deny must use exact destination IDs");
+    deny = { ...(chats ? { chats } : {}), ...(channels ? { channels } : {}) };
   }
 
   return {
@@ -137,6 +166,7 @@ export function parsePolicy(value: unknown): Policy {
     subject,
     ...(identity ? { identity } : {}),
     ...(allow ? { allow } : {}),
+    ...(deny ? { deny } : {}),
   };
 }
 
@@ -322,20 +352,39 @@ export function requirePolicyIdentity(
   return evaluate(resolved, (policy) => identityDenial(policy, identity));
 }
 
+function requireMessageAction(
+  resolved: ResolvedPolicies,
+  identity: { tenantId: string; userId: string },
+  target: MessageTarget,
+  action: MessageAction,
+): string[] {
+  return evaluate(resolved, (policy) => {
+    const identityReason = identityDenial(policy, identity);
+    if (identityReason) return identityReason;
+    const allowed = target.kind === "chat" ? policy.allow?.chats : policy.allow?.channels;
+    const denied = target.kind === "chat" ? policy.deny?.chats : policy.deny?.channels;
+    const explicitlyDenied = denied?.[target.id]?.includes(action) || denied?.["*"]?.includes(action);
+    const explicitlyAllowed = allowed?.[target.id]?.includes(action) || allowed?.["*"]?.includes(action);
+    return explicitlyAllowed && !explicitlyDenied
+      ? undefined
+      : `${action} messages in ${target.kind} ${target.id} is not allowed`;
+  });
+}
+
+export function requireMessageRead(
+  resolved: ResolvedPolicies,
+  identity: { tenantId: string; userId: string },
+  target: MessageTarget,
+): string[] {
+  return requireMessageAction(resolved, identity, target, "read");
+}
+
 export function requireMessageSend(
   resolved: ResolvedPolicies,
   identity: { tenantId: string; userId: string },
   target: MessageTarget,
 ): string[] {
-  return evaluate(resolved, (policy) => {
-    const identityReason = identityDenial(policy, identity);
-    if (identityReason) return identityReason;
-    const allowed = policy.allow?.messageSend;
-    const identifiers = target.kind === "chat" ? allowed?.chats : allowed?.channels;
-    return identifiers?.includes(target.id)
-      ? undefined
-      : `${target.kind} ${target.id} is not allowlisted`;
-  });
+  return requireMessageAction(resolved, identity, target, "post");
 }
 
 export function requireRawTokenExport(
@@ -372,7 +421,8 @@ export async function initializePolicy(
     active: false,
     subject: { paths: pathsToStore },
     identity: { tenantId: context.tenantId, userId: context.userId },
-    allow: { messageSend: { chats: [], channels: [] }, rawTokenExport: false },
+    allow: { chats: {}, channels: {}, rawTokenExport: false },
+    deny: { chats: {}, channels: {} },
   };
   await mkdir(dirname(file), { recursive: true, mode: 0o700 });
   await chmod(dirname(file), 0o700);

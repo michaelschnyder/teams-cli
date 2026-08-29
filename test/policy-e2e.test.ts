@@ -87,6 +87,15 @@ test("inactive policies audit while active policy denials make zero message POST
     await assert.rejects(
       createProgram({ storageRoot: root, subjectPath }).parseAsync([
         "node", "teams-cli", "--tenant", identity.tenantId, "--user", identity.userId,
+        "message", "list", "--chat", "denied-chat",
+      ]),
+      /read messages in chat denied-chat/,
+    );
+    assert.equal(requests, 1);
+
+    await assert.rejects(
+      createProgram({ storageRoot: root, subjectPath }).parseAsync([
+        "node", "teams-cli", "--tenant", identity.tenantId, "--user", identity.userId,
         "auth", "tokens", "access",
       ]),
       /Policy e2e denied operation: raw token export/,
@@ -110,7 +119,8 @@ test("inactive policies audit while active policy denials make zero message POST
       subject: { paths: [subjectPath] },
       identity,
       allow: {
-        messageSend: { chats: ["allowed-chat"], channels: [] },
+        chats: { "allowed-chat": ["post"] },
+        channels: {},
         rawTokenExport: false,
       },
     }), "utf8");

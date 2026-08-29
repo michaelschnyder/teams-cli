@@ -57,9 +57,10 @@ identity:
   tenantId: tenant-id
   userId: user-id
 allow:
-  messageSend:
-    chats: []
-    channels: []
+  chats:
+    "chat-id": [read]
+  channels:
+    "channel-id": [read, post]
   rawTokenExport: false
 ```
 
@@ -127,7 +128,7 @@ policy check raw-tokens [--path <path>]
 policy activate <name>
 ```
 
-`policy activate` is the only CLI state transition. The CLI has no deactivate, edit,
+`policy activate` and the browser editor's Save-and-Activate action are the only activation transitions. The CLI has no deactivate
 or remove command; those actions require deliberate file changes outside the CLI.
 Activation does not change permissions automatically or claim to lock the file. On
 POSIX systems it prints an exact `chmod 400` instruction.
@@ -141,8 +142,8 @@ outside the agent runtime.
 
 ### Verification strategy
 
-Every message-write path requires a deterministic test that invokes the real CLI
-path against a local mock server and proves a denied operation produces zero POSTs.
+Every message-content read and write path requires a deterministic test that invokes the real CLI
+path against a local mock server and proves a denied operation produces zero GETs or POSTs.
 Parser and matcher unit tests alone are insufficient.
 
 An explicit live suite additionally uses a dedicated test tenant with isolated

@@ -43,7 +43,7 @@ test("exposes auth, profile, policy, person, chat, channel, and message commands
   assert.deepEqual(program.commands[1]?.commands.map((command) => command.name()), ["list", "show", "save", "remove"]);
   assert.deepEqual(
     program.commands[2]?.commands.map((command) => command.name()),
-    ["init", "list", "show", "check", "activate"],
+    ["init", "list", "show", "check", "activate", "edit"],
   );
   assert.deepEqual(program.commands[3]?.commands.map((command) => command.name()), ["search", "get", "image"]);
   const imageCommand = program.commands[3]?.commands.find((command) => command.name() === "image");

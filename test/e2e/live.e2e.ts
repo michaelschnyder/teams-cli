@@ -183,7 +183,8 @@ async function configureActivePolicy(
     subject: { paths: [repository] },
     identity,
     allow: {
-      messageSend: { chats: [], channels: [allowedChannelId] },
+      chats: {},
+      channels: { [allowedChannelId]: ["read", "post"] },
       rawTokenExport: false,
     },
   }), "utf8");

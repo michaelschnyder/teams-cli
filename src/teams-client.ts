@@ -795,10 +795,12 @@ export async function listMessages(
   target: MessageTarget,
   options: MessagePageOptions,
   fetchImplementation: typeof fetch = fetch,
+  authorize: () => Promise<void> = async () => undefined,
 ): Promise<MessagePage> {
   const url = options.cursor
     ? continuedMessageUrl(session, target.id, options.cursor)
     : initialMessageUrl(session, target.id, options);
+  await authorize();
   const response = await observedFetch(fetchImplementation, url, {
     headers: {
       authentication: `skypetoken=${session.skypeToken.value}`,
@@ -832,11 +834,13 @@ export async function getMessage(
   target: MessageTarget,
   messageId: string,
   fetchImplementation: typeof fetch = fetch,
+  authorize: () => Promise<void> = async () => undefined,
 ): Promise<MessageResult> {
   const url = new URL(
     `${messagePath(target.id)}/${encodeURIComponent(messageId)}`,
     session.endpoints.chatService,
   );
+  await authorize();
   const response = await observedFetch(fetchImplementation, url, {
     headers: {
       authentication: `skypetoken=${session.skypeToken.value}`,

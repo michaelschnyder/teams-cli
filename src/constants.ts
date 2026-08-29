@@ -6,3 +6,4 @@ export const TEAMS_REDIRECT_URI = "https://teams.microsoft.com/go";
 export const TEAMS_AUTHZ_URL = "https://teams.microsoft.com/api/authsvc/v1.0/authz";
 export const TEAMS_WEB_ORIGIN = "https://teams.microsoft.com";
 export const OUTLOOK_SEARCH_URL = "https://substrate.office.com/search/api/v1/suggestions";
+export const CLI_VERSION = "0.1.0";

@@ -8,6 +8,7 @@ import {
   initializePolicy,
   parsePolicy,
   policyStatusWarnings,
+  requireMessageRead,
   requireMessageSend,
   requireRawTokenExport,
   resolvePolicies,
@@ -28,7 +29,8 @@ function policy(name: string, active = true): Policy {
     subject: { paths: ["/workspace", "/projects/*"] },
     identity,
     allow: {
-      messageSend: { chats: ["chat-1"], channels: ["channel-1"] },
+      chats: { "chat-1": ["read", "post"] },
+      channels: { "channel-1": ["read", "post"] },
       rawTokenExport: false,
     },
   });
@@ -55,10 +57,49 @@ test("allows only exact message IDs under the selected target type", () => {
   assert.throws(() => requireMessageSend(policies, identity, { kind: "chat", id: "CHAT-1" }), /denied/);
 });
 
+test("keeps read and post permissions independent", () => {
+  const readOnly = {
+    ...policy("read-only"),
+    allow: { chats: { "chat-1": ["read"] }, channels: {}, rawTokenExport: false },
+  } satisfies Policy;
+  assert.deepEqual(requireMessageRead(resolved(readOnly), identity, { kind: "chat", id: "chat-1" }), []);
+  assert.throws(() => requireMessageSend(resolved(readOnly), identity, { kind: "chat", id: "chat-1" }), /post messages/);
+});
+
+test("supports broad grants while exact denials always win", () => {
+  const broad = parsePolicy({
+    version: 1,
+    name: "broad-with-exception",
+    active: true,
+    subject: { paths: ["/workspace"] },
+    identity,
+    allow: {
+      chats: { "*": ["read", "post"] },
+      channels: { "*": ["read"] },
+      rawTokenExport: false,
+    },
+    deny: { chats: { "chat-sensitive": ["read"] }, channels: { "channel-private": ["read"] } },
+  });
+  assert.deepEqual(requireMessageRead(resolved(broad), identity, { kind: "chat", id: "chat-other" }), []);
+  assert.deepEqual(requireMessageSend(resolved(broad), identity, { kind: "chat", id: "chat-sensitive" }), []);
+  assert.throws(() => requireMessageRead(resolved(broad), identity, { kind: "chat", id: "chat-sensitive" }), /not allowed/);
+  assert.throws(() => requireMessageRead(resolved(broad), identity, { kind: "channel", id: "channel-private" }), /not allowed/);
+  assert.throws(() => requireMessageSend(resolved(broad), identity, { kind: "channel", id: "channel-other" }), /not allowed/);
+});
+
+test("exact denials override exact allowances", () => {
+  const denied = {
+    ...policy("exact-denial"),
+    deny: { chats: { "chat-1": ["post"] }, channels: {} },
+  } satisfies Policy;
+  assert.deepEqual(requireMessageRead(resolved(denied), identity, { kind: "chat", id: "chat-1" }), []);
+  assert.throws(() => requireMessageSend(resolved(denied), identity, { kind: "chat", id: "chat-1" }), /not allowed/);
+});
+
 test("intersects active policies and audits inactive policies", () => {
   const restrictive = {
     ...policy("restrictive"),
-    allow: { messageSend: { chats: [], channels: [] }, rawTokenExport: false },
+    allow: { chats: {}, channels: {}, rawTokenExport: false },
   } satisfies Policy;
   assert.throws(
     () => requireMessageSend(resolved(policy("base"), restrictive), identity, { kind: "chat", id: "chat-1" }),
@@ -68,7 +109,7 @@ test("intersects active policies and audits inactive policies", () => {
   const inactive = { ...restrictive, active: false } satisfies Policy;
   assert.deepEqual(
     requireMessageSend(resolved(policy("base"), inactive), identity, { kind: "chat", id: "chat-1" }),
-    ["Inactive policy restrictive would deny operation: chat chat-1 is not allowlisted"],
+    ["Inactive policy restrictive would deny operation: post messages in chat chat-1 is not allowed"],
   );
   assert.match(policyStatusWarnings(resolved(inactive))[0] ?? "", /inactive and not enforcing/);
 });
@@ -88,6 +129,36 @@ test("rejects policy fields beyond the versioned schema", () => {
     () => parsePolicy({ version: 2, name: "unsupported", active: false, subject: { paths: ["/workspace"] } }),
     /version must be 1/,
   );
+});
+
+test("rejects the previous messageSend schema and invalid actions", () => {
+  assert.throws(() => parsePolicy({
+    version: 1,
+    name: "legacy",
+    active: false,
+    subject: { paths: ["/workspace"] },
+    allow: { messageSend: { chats: [], channels: [] } },
+  }), /unknown field messageSend/);
+  assert.throws(() => parsePolicy({
+    version: 1,
+    name: "invalid-action",
+    active: false,
+    subject: { paths: ["/workspace"] },
+    allow: { chats: { "chat-1": ["send"] } },
+  }), /actions must be read or post/);
+  assert.throws(() => parsePolicy({
+    version: 1,
+    name: "wildcard-denial",
+    active: false,
+    subject: { paths: ["/workspace"] },
+    deny: { chats: { "*": ["read"] } },
+  }), /exact destination IDs/);
+  assert.throws(() => parsePolicy({
+    version: 1,
+    name: "../escape",
+    active: false,
+    subject: { paths: ["/workspace"] },
+  }), /Policy name/);
 });
 
 test("rejects duplicate YAML keys and aliases", () => {

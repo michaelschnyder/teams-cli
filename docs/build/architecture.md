@@ -9,6 +9,8 @@ Profiles and sessions are deliberately separate:
 - Browser state is identity- and browser-keyed.
 - Policies constrain the effective identity and protected capabilities after configuration resolution. Inactive policies audit; active matching policies intersect.
 
-Message authorization occurs inside the exported send service immediately before each POST. The lower-level message transport is not exported. Retries call the same authorized operation again, so policy is resolved and checked for every attempt.
+Message authorization occurs inside the exported read and send services immediately before each GET or POST. The lower-level send transport is not exported. Policies are resolved again at the transport boundary, including retries, so a policy change takes effect before network access.
+
+The policy editor is an in-process HTTP/WebSocket server owned by one CLI invocation. Its tolerant inspection path reports individual malformed files without weakening the normal fail-closed loader. The browser receives policy data and sanitized discovery labels only; all validation, concurrency checks, and atomic file writes remain server-side.
 
 The current policy resolver supports path subjects with multiple absolute glob patterns. Its result type and capability checks are kept separate from command parsing so additional machine, user, or organization subjects can later be intersected without changing command semantics.
