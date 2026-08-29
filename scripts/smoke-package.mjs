@@ -12,11 +12,12 @@ const environment = {
   NO_UPDATE_NOTIFIER: "1",
 };
 const expectedVersion = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
-const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+if (!process.env.npm_execpath) throw new Error("Run the package smoke test through npm");
+const npm = [process.execPath, process.env.npm_execpath];
 let tarball;
 
 try {
-  const parsed = JSON.parse(execFileSync(npm, ["pack", "--json", "--ignore-scripts"], {
+  const parsed = JSON.parse(execFileSync(npm[0], [npm[1], "pack", "--json", "--ignore-scripts"], {
     cwd: root,
     encoding: "utf8",
     env: environment,
@@ -24,7 +25,7 @@ try {
   const { filename } = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0];
   tarball = join(root, filename);
   const prefix = join(temporary, "prefix");
-  execFileSync(npm, ["install", "--global", "--prefix", prefix, tarball], {
+  execFileSync(npm[0], [npm[1], "install", "--global", "--prefix", prefix, tarball], {
     stdio: "inherit",
     env: environment,
   });

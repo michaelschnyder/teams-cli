@@ -3,8 +3,8 @@ import { readFileSync, rmSync } from "node:fs";
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 
-const npm = process.platform === "win32" ? "npm.cmd" : "npm";
-const output = execFileSync(npm, ["pack", "--json", "--ignore-scripts"], {
+if (!process.env.npm_execpath) throw new Error("Run package validation through npm");
+const output = execFileSync(process.execPath, [process.env.npm_execpath, "pack", "--json", "--ignore-scripts"], {
   encoding: "utf8",
   env: { ...process.env, npm_config_cache: join(tmpdir(), "teams-cli-package-check-cache") },
 });
