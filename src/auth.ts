@@ -12,15 +12,21 @@ import {
 } from "./oauth.js";
 import {
   clearAuthentication,
+  discardStagingBrowserProfile,
   loadSession,
   prepareBrowserProfile,
+  prepareStagingBrowserProfile,
+  promoteStagingBrowserProfile,
   requireCurrentSession,
   saveSession,
-  type AnyStoredSession,
+  type Identity,
   type StoragePaths,
   type StoredSession,
   type StoredToken,
 } from "./storage.js";
+import { execFile } from "node:child_process";
+import { isAbsolute } from "node:path";
+import { promisify } from "node:util";
 import {
   exchangeInitialToken,
   TeamsAuthError,
@@ -69,9 +75,29 @@ export type DataTokenTarget = "access" | "skype" | "chat" | "search";
 
 export type RefreshResult = {
   target: RefreshTarget;
-  before: AnyStoredSession;
+  before: StoredSession;
   after: StoredSession;
 };
+
+const execFileAsync = promisify(execFile);
+
+export async function passwordFromCommand(command: string): Promise<string> {
+  if (!isAbsolute(command)) throw new Error("--password-command must be an absolute executable path");
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync(command, [], {
+      encoding: "utf8",
+      timeout: 30_000,
+      maxBuffer: 16 * 1024,
+      windowsHide: true,
+    }));
+  } catch (error) {
+    throw new Error("Password helper failed");
+  }
+  const password = stdout.replace(/\r?\n$/, "");
+  if (!password.length) throw new Error("Password helper returned an empty password");
+  return password;
+}
 
 function tokenExpiry(metadata: JwtMetadata, expiresIn?: number, now = new Date()): string {
   if (metadata.expiresAt) return metadata.expiresAt;
@@ -79,11 +105,18 @@ function tokenExpiry(metadata: JwtMetadata, expiresIn?: number, now = new Date()
   throw new Error("Teams returned a token without an expiry");
 }
 
-function validateTokenTenant(token: string, expectedTenant: string): JwtMetadata {
+function validateTokenIdentity(
+  token: string,
+  expectedTenant: string,
+  expectedUser?: string,
+): JwtMetadata {
   const metadata = readJwtMetadata(token);
   if (!metadata.tenantId) throw new Error("Teams returned a token without a tenant ID");
   if (metadata.tenantId !== expectedTenant) {
     throw new Error(`Teams returned a token for unexpected tenant ${metadata.tenantId}`);
+  }
+  if (expectedUser && metadata.userId && metadata.userId !== expectedUser) {
+    throw new Error(`Teams returned a token for unexpected user ${metadata.userId}`);
   }
   return metadata;
 }
@@ -108,20 +141,24 @@ function createStoredSession(
   const skype = readJwtMetadata(exchanged.skypeToken);
   const tenantId = access.tenantId ?? skype.tenantId;
   if (!tenantId) throw new Error("Teams returned tokens without a tenant ID");
+  const userId = access.userId;
+  if (!userId) throw new Error("Teams returned an access token without a user ID");
   if (expectedTenant && expectedTenant !== tenantId) {
     throw new Error(`Teams returned a token for unexpected tenant ${tenantId}`);
   }
   for (const token of [exchanged.skypeToken, chatToken, searchToken]) {
-    validateTokenTenant(token, tenantId);
+    validateTokenIdentity(token, tenantId, userId);
   }
   if (!exchanged.region) throw new Error("Teams auth exchange returned no region");
   if (!exchanged.endpoints.chatService) {
     throw new Error("Teams auth exchange returned no regional chat service endpoint");
   }
   return {
-    version: 2,
+    version: 3,
     browser,
     tenantId,
+    userId,
+    ...(access.username ? { username: access.username } : {}),
     savedAt: now.toISOString(),
     region: exchanged.region,
     accessToken: { value: accessToken, expiresAt: tokenExpiry(access, undefined, now) },
@@ -160,54 +197,102 @@ async function acquireAndExchange(
   paths: StoragePaths,
   options: Omit<LoginOptions, "profileDirectory">,
   dependencies: AuthDependencies,
-  expectedTenant?: string,
+  expectedIdentity: { tenantId?: string; userId?: string } = {},
 ): Promise<StoredSession> {
-  const profileDirectory = await prepareBrowserProfile(paths, options.browser);
-  const acquired = await dependencies.acquireTokens(ALL_RESOURCES, { ...options, profileDirectory });
+  const knownIdentity = !options.interactive && expectedIdentity.tenantId && expectedIdentity.userId
+    ? { tenantId: expectedIdentity.tenantId, userId: expectedIdentity.userId }
+    : null;
+  const staging = knownIdentity ? null : await prepareStagingBrowserProfile(paths, options.browser);
+  const profileDirectory = knownIdentity
+    ? await prepareBrowserProfile(paths, knownIdentity, options.browser)
+    : staging?.directory as string;
   try {
-    const exchanged = await dependencies.exchangeToken(requireResource(acquired.tokens, SKYPE_RESOURCE));
-    return createStoredSession(
-      acquired.tokens,
-      exchanged,
-      options.browser,
-      expectedTenant,
-      dependencies.now(),
-    );
-  } finally {
-    await acquired.close();
+    const acquired = await dependencies.acquireTokens(ALL_RESOURCES, { ...options, profileDirectory });
+    let session: StoredSession;
+    try {
+      const exchanged = await dependencies.exchangeToken(requireResource(acquired.tokens, SKYPE_RESOURCE));
+      session = createStoredSession(
+        acquired.tokens,
+        exchanged,
+        options.browser,
+        expectedIdentity.tenantId,
+        dependencies.now(),
+      );
+      if (expectedIdentity.userId && expectedIdentity.userId !== session.userId) {
+        throw new Error(`Microsoft login returned unexpected user ${session.userId}`);
+      }
+    } finally {
+      await acquired.close();
+    }
+    if (staging) {
+      await promoteStagingBrowserProfile(paths, staging.identifier, session, options.browser);
+    }
+    return session;
+  } catch (error) {
+    if (staging) await discardStagingBrowserProfile(paths, staging.identifier);
+    throw error;
   }
 }
 
 export async function login(
   paths: StoragePaths,
-  options: { browser: BrowserName; tenant?: string },
+  options: {
+    browser: BrowserName;
+    tenant?: string;
+    user?: string;
+    username?: string;
+    password?: string;
+    passwordCommand?: string;
+    headless?: boolean;
+    authorizeIdentity?: (identity: Identity) => Promise<void>;
+  },
   dependencies = defaultDependencies,
 ): Promise<StoredSession> {
+  if (options.password && options.passwordCommand) {
+    throw new Error("Provide either a password or --password-command, not both");
+  }
+  if ((options.password || options.passwordCommand) && !options.username) {
+    throw new Error("Automated login requires a username");
+  }
+  if (options.headless && !options.password && !options.passwordCommand) {
+    throw new Error("--headless login requires automated credentials");
+  }
+  const password = options.password ?? (options.passwordCommand
+    ? await passwordFromCommand(options.passwordCommand)
+    : undefined);
   const session = await acquireAndExchange(
     paths,
     {
       browser: options.browser,
       interactive: true,
+      ...(options.headless ? { headless: true } : {}),
+      ...(options.username ? { username: options.username } : {}),
+      ...(password ? { password } : {}),
       ...(options.tenant ? { tenant: options.tenant } : {}),
     },
     dependencies,
-    options.tenant,
+    {
+      ...(options.tenant ? { tenantId: options.tenant } : {}),
+      ...(options.user ? { userId: options.user } : {}),
+    },
   );
+  if (options.authorizeIdentity) await options.authorizeIdentity(session);
   await saveSession(paths, session);
   return session;
 }
 
 async function refreshAll(
   paths: StoragePaths,
-  session: AnyStoredSession,
+  session: StoredSession,
   dependencies: AuthDependencies,
+  browser: BrowserName,
 ): Promise<StoredSession> {
   try {
     return await acquireAndExchange(
       paths,
-      { browser: session.browser, interactive: false, tenant: session.tenantId },
+      { browser, interactive: false, tenant: session.tenantId },
       dependencies,
-      session.tenantId,
+      { tenantId: session.tenantId, userId: session.userId },
     );
   } catch (error) {
     interactiveRefreshError(error);
@@ -219,18 +304,19 @@ async function acquireOneResource(
   session: StoredSession,
   resource: string,
   dependencies: AuthDependencies,
+  browser: BrowserName,
 ): Promise<StoredToken> {
-  const profileDirectory = await prepareBrowserProfile(paths, session.browser);
+  const profileDirectory = await prepareBrowserProfile(paths, session, browser);
   try {
     const acquired = await dependencies.acquireTokens([resource], {
-      browser: session.browser,
+      browser,
       interactive: false,
       tenant: session.tenantId,
       profileDirectory,
     });
     try {
       const token = requireResource(acquired.tokens, resource);
-      const metadata = validateTokenTenant(token, session.tenantId);
+      const metadata = validateTokenIdentity(token, session.tenantId, session.userId);
       return { value: token, expiresAt: tokenExpiry(metadata, undefined, dependencies.now()) };
     } finally {
       await acquired.close();
@@ -244,11 +330,13 @@ async function refreshAccess(
   paths: StoragePaths,
   session: StoredSession,
   dependencies: AuthDependencies,
+  browser: BrowserName,
 ): Promise<StoredSession> {
   return {
     ...session,
     savedAt: dependencies.now().toISOString(),
-    accessToken: await acquireOneResource(paths, session, SKYPE_RESOURCE, dependencies),
+    browser,
+    accessToken: await acquireOneResource(paths, session, SKYPE_RESOURCE, dependencies, browser),
   };
 }
 
@@ -257,11 +345,13 @@ async function refreshOAuthTarget(
   session: StoredSession,
   target: "chat" | "search",
   dependencies: AuthDependencies,
+  browser: BrowserName,
 ): Promise<StoredSession> {
   const resource = target === "chat" ? CHAT_SVC_AGG_RESOURCE : OUTLOOK_SEARCH_RESOURCE;
-  const token = await acquireOneResource(paths, session, resource, dependencies);
+  const token = await acquireOneResource(paths, session, resource, dependencies, browser);
   return {
     ...session,
+    browser,
     savedAt: dependencies.now().toISOString(),
     ...(target === "chat" ? { chatToken: token } : { searchToken: token }),
   };
@@ -277,7 +367,7 @@ async function refreshSkype(
     );
   }
   const exchanged = await dependencies.exchangeToken(session.accessToken.value);
-  const metadata = validateTokenTenant(exchanged.skypeToken, session.tenantId);
+  const metadata = validateTokenIdentity(exchanged.skypeToken, session.tenantId, session.userId);
   if (!exchanged.region || !exchanged.endpoints.chatService) {
     throw new Error("Teams auth exchange returned an incomplete regional endpoint map");
   }
@@ -301,34 +391,35 @@ async function refreshSkype(
 
 export async function refreshTokens(
   paths: StoragePaths,
+  identity: Identity,
   target: RefreshTarget = "all",
+  browser?: BrowserName,
   dependencies = defaultDependencies,
 ): Promise<RefreshResult> {
-  const before = await loadSession(paths);
-  if (before.version === 1 && target !== "all") {
-    throw new Error(
-      "Stored Teams session is outdated. Run `teams-cli auth refresh all` to update it.",
-    );
-  }
+  const before = requireCurrentSession(await loadSession(paths, identity));
+  const selectedBrowser = browser ?? before.browser;
   const session = target === "all"
-    ? await refreshAll(paths, before, dependencies)
+    ? await refreshAll(paths, before, dependencies, selectedBrowser)
     : target === "access"
-      ? await refreshAccess(paths, requireCurrentSession(before), dependencies)
+      ? await refreshAccess(paths, before, dependencies, selectedBrowser)
       : target === "skype"
-        ? await refreshSkype(requireCurrentSession(before), dependencies)
-        : await refreshOAuthTarget(paths, requireCurrentSession(before), target, dependencies);
+        ? await refreshSkype(before, dependencies)
+        : await refreshOAuthTarget(paths, before, target, dependencies, selectedBrowser);
   await saveSession(paths, session);
   return { target, before, after: session };
 }
 
 export async function validateSession(
   paths: StoragePaths,
+  identity: Identity,
+  browser?: BrowserName,
   dependencies = defaultDependencies,
 ): Promise<StoredSession> {
-  const stored = requireCurrentSession(await loadSession(paths));
+  const stored = requireCurrentSession(await loadSession(paths, identity));
+  const selectedBrowser = browser ?? stored.browser;
   let session: StoredSession;
   if (secondsUntil(stored.accessToken.expiresAt, dependencies.now()) === 0) {
-    session = await refreshAll(paths, stored, dependencies);
+    session = await refreshAll(paths, stored, dependencies, selectedBrowser);
   } else {
     try {
       session = await refreshSkype(stored, dependencies);
@@ -336,7 +427,7 @@ export async function validateSession(
       if (!(error instanceof TeamsAuthError) || (error.status !== 401 && error.status !== 403)) {
         throw error;
       }
-      session = await refreshAll(paths, stored, dependencies);
+      session = await refreshAll(paths, stored, dependencies, selectedBrowser);
     }
   }
   await saveSession(paths, session);
@@ -355,17 +446,19 @@ function tokenForTarget(session: StoredSession, target: DataTokenTarget): Stored
 
 export async function ensureDataSession(
   paths: StoragePaths,
+  identity: Identity,
   target: DataTokenTarget,
+  browser?: BrowserName,
   dependencies = defaultDependencies,
 ): Promise<StoredSession> {
-  const session = requireCurrentSession(await loadSession(paths));
+  const session = requireCurrentSession(await loadSession(paths, identity));
   if (secondsUntil(tokenForTarget(session, target).expiresAt, dependencies.now()) > 60) {
     return session;
   }
   if (target === "skype" && secondsUntil(session.accessToken.expiresAt, dependencies.now()) <= 60) {
-    await refreshTokens(paths, "access", dependencies);
+    await refreshTokens(paths, identity, "access", browser, dependencies);
   }
-  return (await refreshTokens(paths, target, dependencies)).after;
+  return (await refreshTokens(paths, identity, target, browser, dependencies)).after;
 }
 
 function tokenResult(token: StoredToken, now: Date): TokenResult {
@@ -383,7 +476,7 @@ export function describeSession(session: StoredSession, now = new Date()): Whoam
   return {
     authenticated: true,
     user: {
-      id: identity.userId ?? null,
+      id: identity.userId ?? session.userId,
       name: identity.name ?? null,
       username: identity.username ?? null,
       tenantId: session.tenantId,
@@ -397,6 +490,6 @@ export function describeSession(session: StoredSession, now = new Date()): Whoam
   };
 }
 
-export async function logout(paths: StoragePaths): Promise<void> {
-  await clearAuthentication(paths);
+export async function logout(paths: StoragePaths, identity: Identity): Promise<void> {
+  await clearAuthentication(paths, identity);
 }

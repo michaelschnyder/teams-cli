@@ -1,5 +1,7 @@
 # ADR 0001: Use browser-backed authentication with private Teams APIs
 
+> Historical note (2026-08-28): The single-session storage protocol in this ADR was replaced by identity-scoped session version 3 and optional profile selectors. See [ADR 0004](0004-use-profiles-for-identity-scoped-sessions.md). Workspace enforcement is recorded separately in [ADR 0005](0005-enforce-workspace-policies-at-message-boundary.md).
+
 - **Status:** Accepted
 - **Date:** 2026-08-11
 - **Updated:** 2026-08-14

@@ -14,9 +14,10 @@ import {
 import type { StoredSession } from "../src/storage.js";
 
 const session: StoredSession = {
-  version: 2,
+  version: 3,
   browser: "edge",
   tenantId: "tenant",
+  userId: "user-id",
   savedAt: "2026-08-18T00:00:00.000Z",
   region: "emea",
   accessToken: { value: "access", expiresAt: "2027-01-01T00:00:00.000Z" },

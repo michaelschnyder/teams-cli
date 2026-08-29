@@ -1,5 +1,9 @@
 # ADR 0003: Use OSO CLI command conventions where semantics match
 
+> Historical note: references to `guardrails.json` describe the original implementation. Workspace YAML policies now provide destination and token-export controls; see [workspace policies](../../use/policies.md).
+>
+> Later decision (2026-08-28): [ADR 0005](0005-enforce-workspace-policies-at-message-boundary.md) supersedes the original JSON guardrail and no-live-write testing rules. [ADR 0004](0004-use-profiles-for-identity-scoped-sessions.md) records profile and identity selection without changing the resource/verb command convention.
+
 - **Status:** Accepted
 - **Date:** 2026-08-24
 - **Decision owners:** Project maintainers

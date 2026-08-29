@@ -3,7 +3,7 @@ import { OUTLOOK_SEARCH_URL, TEAMS_WEB_ORIGIN } from "./constants.js";
 import { readJwtMetadata } from "./jwt.js";
 import type { StoredSession } from "./storage.js";
 import { observedFetch } from "./diagnostics.js";
-import type { MessageTarget } from "./guardrails.js";
+import type { MessageTarget } from "./policy.js";
 
 type DataTokenTarget = "access" | "skype" | "chat" | "search";
 
@@ -487,7 +487,7 @@ function requireCursorTenant(cursor: Cursor, session: StoredSession): void {
   }
 }
 
-function csaUrl(session: StoredSession, updates: boolean): URL {
+function csaUrl(updates: boolean): URL {
   const url = new URL(
     `/api/csa/api/v1/teams/users/me${updates ? "/updates" : ""}`,
     TEAMS_WEB_ORIGIN,
@@ -531,7 +531,7 @@ export async function listChats(
     requireCursorTenant(cursor, session);
     syncToken = cursor.syncToken;
   }
-  const response = await observedFetch(fetchImplementation, csaUrl(session, Boolean(syncToken)), {
+  const response = await observedFetch(fetchImplementation, csaUrl(Boolean(syncToken)), {
     headers: {
       authorization: `Bearer ${session.chatToken.value}`,
       "x-skypetoken": session.skypeToken.value,
@@ -709,7 +709,7 @@ async function discoveryPayload(
   session: StoredSession,
   fetchImplementation: typeof fetch,
 ): Promise<{ chats?: unknown; users?: unknown; teams?: unknown }> {
-  const response = await observedFetch(fetchImplementation, csaUrl(session, false), {
+  const response = await observedFetch(fetchImplementation, csaUrl(false), {
     headers: {
       authorization: `Bearer ${session.chatToken.value}`,
       "x-skypetoken": session.skypeToken.value,
@@ -855,6 +855,7 @@ export async function sendMessage(
   content: string,
   requestId: string,
   sessionId: string,
+  authorize: () => Promise<void>,
   fetchImplementation: typeof fetch = fetch,
 ): Promise<MessageSendResult> {
   const plainTextAsHtml = content
@@ -865,6 +866,7 @@ export async function sendMessage(
     .replaceAll("'", "&#39;")
     .replaceAll(/\r?\n/g, "<br>");
   const displayName = readJwtMetadata(session.accessToken.value).name ?? "";
+  await authorize();
   const response = await observedFetch(fetchImplementation, new URL(messagePath(target.id), session.endpoints.chatService), {
     method: "POST",
     headers: {

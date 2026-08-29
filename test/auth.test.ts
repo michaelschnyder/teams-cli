@@ -1,21 +1,83 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
   describeSession,
   ensureDataSession,
+  login,
+  passwordFromCommand,
   refreshTokens,
   validateSession,
   type AuthDependencies,
 } from "../src/auth.js";
-import { saveSession, storagePaths, type StoredSession } from "../src/storage.js";
+import { loadSession, saveSession, storagePaths, type StoredSession } from "../src/storage.js";
 import {
   CHAT_SVC_AGG_RESOURCE,
   OUTLOOK_SEARCH_RESOURCE,
   SKYPE_RESOURCE,
 } from "../src/constants.js";
+
+test("reads a CI password from bounded executable stdout", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-cli-password-helper-"));
+  try {
+    const helper = join(root, "password-helper");
+    await writeFile(helper, "#!/bin/sh\nprintf 'test-password\\n'\n", { mode: 0o700 });
+    await chmod(helper, 0o700);
+    assert.equal(await passwordFromCommand(helper), "test-password");
+    await assert.rejects(passwordFromCommand("relative-helper"), /absolute executable path/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("login stores the verified tenant and user in isolated identity storage", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-cli-login-identity-"));
+  try {
+    const paths = storagePaths(root);
+    const identity = { tenantId: "tenant", userId: "alice" };
+    const access = jwt({ tid: identity.tenantId, oid: identity.userId, preferred_username: "alice@example.test", exp: 1_900_000_000 });
+    const chat = jwt({ tid: identity.tenantId, oid: identity.userId, exp: 1_900_000_000 });
+    const search = jwt({ tid: identity.tenantId, oid: identity.userId, exp: 1_900_000_000 });
+    const skype = jwt({ tid: identity.tenantId, oid: identity.userId, exp: 1_900_000_000 });
+    const dependencies: AuthDependencies = {
+      now: () => new Date("2026-08-28T00:00:00.000Z"),
+      acquireTokens: async (_resources, options) => {
+        assert.equal(options.username, "alice@example.test");
+        assert.equal(options.password, "test-password");
+        assert.equal(options.headless, true);
+        return {
+          tokens: new Map([
+            [SKYPE_RESOURCE, access],
+            [CHAT_SVC_AGG_RESOURCE, chat],
+            [OUTLOOK_SEARCH_RESOURCE, search],
+          ]),
+          close: async () => undefined,
+        };
+      },
+      exchangeToken: async () => ({
+        skypeToken: skype,
+        region: "test",
+        endpoints: { chatService: "https://test.invalid" },
+      }),
+    };
+    const loggedIn = await login(paths, {
+      browser: "edge",
+      tenant: identity.tenantId,
+      user: identity.userId,
+      username: "alice@example.test",
+      password: "test-password",
+      headless: true,
+    }, dependencies);
+    assert.equal(loggedIn.version, 3);
+    assert.equal(loggedIn.username, "alice@example.test");
+    assert.deepEqual(await loadSession(paths, identity), loggedIn);
+    assert.equal((await stat(paths.browserProfile(identity, "edge"))).isDirectory(), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
 
 function jwt(payload: object): string {
   return `header.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`;
@@ -26,9 +88,10 @@ test("silently refreshes an expired session with its saved browser and tenant", 
   try {
     const paths = storagePaths(root);
     const expired: StoredSession = {
-      version: 2,
+      version: 3,
       browser: "chrome",
       tenantId: "tenant",
+      userId: "user-id",
       savedAt: "2026-08-13T00:00:00.000Z",
       region: "emea",
       accessToken: {
@@ -70,7 +133,7 @@ test("silently refreshes an expired session with its saved browser and tenant", 
         assert.equal(options.browser, "chrome");
         assert.equal(options.interactive, false);
         assert.equal(options.tenant, "tenant");
-        assert.equal(options.profileDirectory, paths.browserProfile("chrome"));
+        assert.equal(options.profileDirectory, paths.browserProfile({ tenantId: "tenant", userId: "user-id" }, "chrome"));
         return {
           tokens: new Map([
             [SKYPE_RESOURCE, freshAccess],
@@ -90,7 +153,7 @@ test("silently refreshes an expired session with its saved browser and tenant", 
       },
     };
 
-    const refreshed = await validateSession(paths, dependencies);
+    const refreshed = await validateSession(paths, { tenantId: "tenant", userId: "user-id" }, "chrome", dependencies);
     assert.equal(closed, true);
     assert.equal(refreshed.accessToken.value, freshAccess);
     const output = describeSession(refreshed, dependencies.now());
@@ -109,9 +172,10 @@ test("refreshes only the access token when requested", async () => {
     const oldAccess = jwt({ tid: "tenant", exp: 1_800_000_000 });
     const oldSkype = jwt({ tid: "tenant", exp: 1_800_000_100 });
     await saveSession(paths, {
-      version: 2,
+      version: 3,
       browser: "edge",
       tenantId: "tenant",
+      userId: "user-id",
       savedAt: "2026-08-13T00:00:00.000Z",
       region: "emea",
       accessToken: { value: oldAccess, expiresAt: "2027-01-15T08:00:00.000Z" },
@@ -137,7 +201,7 @@ test("refreshes only the access token when requested", async () => {
       },
     };
 
-    const refreshed = await refreshTokens(paths, "access", dependencies);
+    const refreshed = await refreshTokens(paths, { tenantId: "tenant", userId: "user-id" }, "access", "edge", dependencies);
     assert.equal(refreshed.before.accessToken.value, oldAccess);
     assert.equal(refreshed.after.accessToken.value, freshAccess);
     assert.equal(refreshed.after.skypeToken.value, oldSkype);
@@ -154,9 +218,10 @@ test("refreshes only the Skype token when the access token is valid", async () =
     const oldSkype = jwt({ tid: "tenant", exp: 1_700_000_000 });
     const freshSkype = jwt({ tid: "tenant", exp: 1_800_001_000 });
     await saveSession(paths, {
-      version: 2,
+      version: 3,
       browser: "chrome",
       tenantId: "tenant",
+      userId: "user-id",
       savedAt: "2026-08-13T00:00:00.000Z",
       region: "emea",
       accessToken: { value: access, expiresAt: "2027-01-15T08:00:00.000Z" },
@@ -180,7 +245,7 @@ test("refreshes only the Skype token when the access token is valid", async () =
       },
     };
 
-    const refreshed = await refreshTokens(paths, "skype", dependencies);
+    const refreshed = await refreshTokens(paths, { tenantId: "tenant", userId: "user-id" }, "skype", "chrome", dependencies);
     assert.equal(refreshed.before.skypeToken.value, oldSkype);
     assert.equal(refreshed.after.accessToken.value, access);
     assert.equal(refreshed.after.skypeToken.value, freshSkype);
@@ -196,9 +261,10 @@ test("refreshes a data token within the sixty-second expiry skew", async () => {
     const now = new Date("2026-08-18T00:00:00.000Z");
     const freshChat = jwt({ tid: "tenant", exp: Math.floor(now.getTime() / 1000) + 3600 });
     await saveSession(paths, {
-      version: 2,
+      version: 3,
       browser: "edge",
       tenantId: "tenant",
+      userId: "user-id",
       savedAt: now.toISOString(),
       region: "emea",
       accessToken: { value: jwt({ tid: "tenant" }), expiresAt: "2027-01-01T00:00:00.000Z" },
@@ -217,7 +283,7 @@ test("refreshes a data token within the sixty-second expiry skew", async () => {
       },
       exchangeToken: async () => { throw new Error("chat refresh must not exchange Skype"); },
     };
-    const refreshed = await ensureDataSession(paths, "chat", dependencies);
+    const refreshed = await ensureDataSession(paths, { tenantId: "tenant", userId: "user-id" }, "chat", "edge", dependencies);
     assert.equal(acquisitions, 1);
     assert.equal(refreshed.chatToken.value, freshChat);
   } finally {
@@ -232,9 +298,10 @@ test("refreshes the access token used by person profile operations", async () =>
     const now = new Date("2026-08-18T00:00:00.000Z");
     const freshAccess = jwt({ tid: "tenant", exp: Math.floor(now.getTime() / 1000) + 3600 });
     await saveSession(paths, {
-      version: 2,
+      version: 3,
       browser: "edge",
       tenantId: "tenant",
+      userId: "user-id",
       savedAt: now.toISOString(),
       region: "emea",
       accessToken: { value: jwt({ tid: "tenant" }), expiresAt: "2026-08-18T00:00:59.000Z" },
@@ -251,7 +318,7 @@ test("refreshes the access token used by person profile operations", async () =>
       },
       exchangeToken: async () => { throw new Error("access refresh must not exchange Skype"); },
     };
-    const refreshed = await ensureDataSession(paths, "access", dependencies);
+    const refreshed = await ensureDataSession(paths, { tenantId: "tenant", userId: "user-id" }, "access", "edge", dependencies);
     assert.equal(refreshed.accessToken.value, freshAccess);
   } finally {
     await rm(root, { recursive: true, force: true });

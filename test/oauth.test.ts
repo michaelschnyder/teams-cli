@@ -5,6 +5,7 @@ import {
   createInitialTokenUrl,
   createResourceTokenUrl,
   browserChannel,
+  completePasswordLogin,
   tokenFromRedirect,
 } from "../src/oauth.js";
 
@@ -38,4 +39,43 @@ test("extracts only an access token from the expected callback", () => {
     "secret",
   );
   assert.equal(tokenFromRedirect("https://example.com/go#access_token=secret"), undefined);
+});
+
+test("submits Microsoft username and password forms by clicking their controls", async () => {
+  const actions: string[] = [];
+  const input = (name: string) => ({
+    waitFor: async () => { actions.push(`wait:${name}`); },
+    fill: async () => { actions.push(`fill:${name}`); },
+  });
+  const submit = {
+    click: async () => { actions.push("click:submit"); },
+  };
+  const staySignedIn = {
+    waitFor: async () => { actions.push("wait:stay-signed-in"); },
+    click: async () => { actions.push("click:stay-signed-in"); },
+  };
+  const page = {
+    locator: (selector: string) => ({
+      first: () => selector.includes("loginfmt")
+        ? input("username")
+        : selector.includes("passwd")
+          ? input("password")
+          : selector.includes('value="Yes"')
+            ? staySignedIn
+            : submit,
+    }),
+  } as unknown as Parameters<typeof completePasswordLogin>[0];
+
+  await completePasswordLogin(page, "alice@example.test", "not-a-real-password", 1_000);
+
+  assert.deepEqual(actions, [
+    "wait:username",
+    "fill:username",
+    "click:submit",
+    "wait:password",
+    "fill:password",
+    "click:submit",
+    "wait:stay-signed-in",
+    "click:stay-signed-in",
+  ]);
 });

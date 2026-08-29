@@ -13,9 +13,10 @@ import {
 } from "../src/storage.js";
 
 const session: StoredSession = {
-  version: 2,
+  version: 3,
   browser: "chrome",
   tenantId: "tenant",
+  userId: "user-id",
   savedAt: "2026-08-14T00:00:00.000Z",
   region: "emea",
   accessToken: { value: "access", expiresAt: "2026-08-14T01:00:00.000Z" },
@@ -29,22 +30,40 @@ test("partitions auth and browser state below a replaceable storage root", async
   const root = await mkdtemp(join(tmpdir(), "teams-cli-storage-"));
   try {
     const paths = storagePaths(root);
-    assert.equal(paths.sessionFile, join(root, "auth", "session.json"));
-    assert.equal(paths.guardrailsFile, join(root, "guardrails.json"));
-    assert.equal(paths.browserProfile("edge"), join(root, "browser-profiles", "edge"));
-    assert.equal(paths.browserProfile("chrome"), join(root, "browser-profiles", "chrome"));
+    const identity = { tenantId: "tenant", userId: "user-id" };
+    assert.match(paths.sessionFile(identity), new RegExp(`^${join(root, "auth")}`));
+    assert.equal(paths.configFile, join(root, "config.yaml"));
+    assert.match(paths.browserProfile(identity, "edge"), new RegExp(`^${join(root, "browser-profiles")}`));
+    assert.match(paths.browserProfile(identity, "chrome"), /chrome$/);
 
-    await prepareBrowserProfile(paths, "chrome");
+    await prepareBrowserProfile(paths, identity, "chrome");
     await saveSession(paths, session);
-    assert.deepEqual(await loadSession(paths), session);
-    assert.match(await readFile(paths.sessionFile, "utf8"), /"tenantId": "tenant"/);
+    assert.deepEqual(await loadSession(paths, identity), session);
+    assert.match(await readFile(paths.sessionFile(identity), "utf8"), /"tenantId": "tenant"/);
     if (process.platform !== "win32") {
-      assert.equal((await stat(paths.sessionFile)).mode & 0o777, 0o600);
+      assert.equal((await stat(paths.sessionFile(identity))).mode & 0o777, 0o600);
     }
 
-    await clearAuthentication(paths);
-    await assert.rejects(loadSession(paths), /Not logged in/);
-    await clearAuthentication(paths);
+    await clearAuthentication(paths, identity);
+    await assert.rejects(loadSession(paths, identity), /Not logged in/);
+    await clearAuthentication(paths, identity);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("isolates sessions and browser state for two users in one tenant", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-cli-storage-users-"));
+  try {
+    const paths = storagePaths(root);
+    const alice = { tenantId: "tenant", userId: "alice" };
+    const bob = { tenantId: "tenant", userId: "bob" };
+    await saveSession(paths, { ...session, userId: alice.userId });
+    await saveSession(paths, { ...session, userId: bob.userId, accessToken: { ...session.accessToken, value: "bob-access" } });
+    assert.equal((await loadSession(paths, alice)).userId, "alice");
+    assert.equal((await loadSession(paths, bob)).accessToken.value, "bob-access");
+    assert.notEqual(paths.sessionFile(alice), paths.sessionFile(bob));
+    assert.notEqual(paths.browserProfile(alice, "chrome"), paths.browserProfile(bob, "chrome"));
   } finally {
     await rm(root, { recursive: true, force: true });
   }

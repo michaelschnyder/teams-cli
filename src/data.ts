@@ -7,10 +7,12 @@ import { secondsUntil } from "./jwt.js";
 import {
   loadSession,
   requireCurrentSession,
+  type Identity,
   type StoragePaths,
   type StoredSession,
   type StoredToken,
 } from "./storage.js";
+import type { BrowserName } from "./oauth.js";
 import { TeamsApiError } from "./teams-client.js";
 
 const REFRESH_SKEW_SECONDS = 60;
@@ -29,30 +31,37 @@ function label(target: DataTokenTarget | "access"): string {
   return target === "skype" ? "Skype" : target === "chat" ? "Chat" : target === "search" ? "Search" : "access";
 }
 
-async function refreshTarget(paths: StoragePaths, target: DataTokenTarget): Promise<StoredSession> {
-  let session = requireCurrentSession(await loadSession(paths));
+async function refreshTarget(
+  paths: StoragePaths,
+  identity: Identity,
+  browser: BrowserName,
+  target: DataTokenTarget,
+): Promise<StoredSession> {
+  let session = requireCurrentSession(await loadSession(paths, identity));
   if (
     target === "skype" &&
     secondsUntil(session.accessToken.expiresAt) <= REFRESH_SKEW_SECONDS
   ) {
     showStatus("Refreshing access token…");
     debugDecision("refresh token=access reason=Skype-prerequisite");
-    session = (await refreshTokens(paths, "access")).after;
+    session = (await refreshTokens(paths, identity, "access", browser)).after;
   }
   showStatus(`Refreshing ${label(target)} token…`);
   debugDecision(`refresh token=${target}`);
-  return (await refreshTokens(paths, target)).after;
+  return (await refreshTokens(paths, identity, target, browser)).after;
 }
 
 async function prepareSession(
   paths: StoragePaths,
+  identity: Identity,
+  browser: BrowserName,
   targets: readonly DataTokenTarget[],
   force: boolean,
 ): Promise<StoredSession> {
-  let session = requireCurrentSession(await loadSession(paths));
+  let session = requireCurrentSession(await loadSession(paths, identity));
   for (const target of targets) {
     if (force || secondsUntil(tokenForTarget(session, target).expiresAt) <= REFRESH_SKEW_SECONDS) {
-      session = await refreshTarget(paths, target);
+      session = await refreshTarget(paths, identity, browser, target);
     }
   }
   return session;
@@ -60,12 +69,13 @@ async function prepareSession(
 
 export async function withDataSession<T>(
   paths: StoragePaths,
+  identity: Identity,
+  browser: BrowserName,
   targets: DataTokenTarget | readonly DataTokenTarget[],
   operation: (session: StoredSession) => Promise<T>,
-  beforeRetry?: () => Promise<void>,
 ): Promise<T> {
   const required = typeof targets === "string" ? [targets] : [...targets];
-  const session = await prepareSession(paths, required, false);
+  const session = await prepareSession(paths, identity, browser, required, false);
   setRequestAttempt(1);
   try {
     return await operation(session);
@@ -74,8 +84,7 @@ export async function withDataSession<T>(
       throw error;
     }
     debugDecision(`retry authenticationStatus=${error.status} attempt=2`);
-    const refreshed = await prepareSession(paths, required, true);
-    if (beforeRetry) await beforeRetry();
+    const refreshed = await prepareSession(paths, identity, browser, required, true);
     setRequestAttempt(2);
     return operation(refreshed);
   }

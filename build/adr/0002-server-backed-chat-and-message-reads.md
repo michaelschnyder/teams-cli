@@ -1,5 +1,7 @@
 # ADR 0002: Use server-backed private APIs for people, chat, and message reads
 
+> Historical note (2026-08-28): The version 2 session layout remains historical; identity-scoped session version 3 is recorded in [ADR 0004](0004-use-profiles-for-identity-scoped-sessions.md). The later plain-text message write and its authorization boundary are recorded in [ADR 0005](0005-enforce-workspace-policies-at-message-boundary.md).
+
 - **Status:** Accepted
 - **Date:** 2026-08-14
 - **Decision owners:** Project maintainers

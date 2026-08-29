@@ -11,6 +11,9 @@ export type LoginOptions = {
   browser: BrowserName;
   interactive: boolean;
   tenant?: string;
+  headless?: boolean;
+  username?: string;
+  password?: string;
   timeoutMs?: number;
 };
 
@@ -101,6 +104,31 @@ async function waitForToken(page: Page, timeoutMs: number): Promise<string> {
   });
 }
 
+export async function completePasswordLogin(
+  page: Page,
+  username: string,
+  password: string,
+  timeoutMs: number,
+): Promise<void> {
+  const usernameInput = page.locator('input[name="loginfmt"], input[type="email"]').first();
+  await usernameInput.waitFor({ state: "visible", timeout: timeoutMs });
+  await usernameInput.fill(username);
+  await page.locator('#idSIButton9, input[type="submit"], button[type="submit"]').first().click();
+
+  const passwordInput = page.locator('input[name="passwd"], input[type="password"]').first();
+  await passwordInput.waitFor({ state: "visible", timeout: timeoutMs });
+  await passwordInput.fill(password);
+  await page.locator('#idSIButton9, input[type="submit"], button[type="submit"]').first().click();
+
+  const staySignedIn = page.locator('input[type="submit"][value="Yes"], button:has-text("Yes")').first();
+  try {
+    await staySignedIn.waitFor({ state: "visible", timeout: 5_000 });
+    await staySignedIn.click();
+  } catch {
+    // The tenant may skip the stay-signed-in prompt.
+  }
+}
+
 export async function acquireInitialToken(
   options: LoginOptions,
 ): Promise<{ close: () => Promise<void>; token: string }> {
@@ -122,7 +150,7 @@ export async function acquireResourceTokens(
   try {
     context = await chromium.launchPersistentContext(options.profileDirectory, {
       channel: browserChannel(options.browser),
-      headless: !options.interactive,
+      headless: options.headless ?? !options.interactive,
       viewport: null,
       args: ["--no-first-run"],
     });
@@ -147,6 +175,14 @@ export async function acquireResourceTokens(
           ),
           { waitUntil: "domcontentloaded" },
         );
+        if (index === 0 && options.username && options.password) {
+          await completePasswordLogin(
+            page,
+            options.username,
+            options.password,
+            options.timeoutMs ?? 5 * 60_000,
+          );
+        }
         tokens.set(resource, await tokenPromise);
       } catch (error) {
         await tokenPromise.catch(() => undefined);

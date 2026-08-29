@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 import {
   createProgram,
@@ -9,16 +12,18 @@ import {
   renderTokens,
   selectedTarget,
 } from "../src/cli.js";
-import type { StoredSession } from "../src/storage.js";
+import { initializePolicy, resolvePolicyByName } from "../src/policy.js";
+import { storagePaths, type StoredSession } from "../src/storage.js";
 
 function jwt(payload: object): string {
   return `header.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`;
 }
 
 const session: StoredSession = {
-  version: 2,
+  version: 3,
   browser: "edge",
   tenantId: "tenant",
+  userId: "user-id",
   savedAt: "2026-08-14T00:00:00.000Z",
   region: "emea",
   accessToken: { value: jwt({ kind: "access" }), expiresAt: "2027-01-01T00:00:00.000Z" },
@@ -28,20 +33,66 @@ const session: StoredSession = {
   endpoints: { chatService: "https://emea.ng.msg.teams.microsoft.com" },
 };
 
-test("exposes the final auth, person, chat, channel, and message command groups", () => {
+test("exposes auth, profile, policy, person, chat, channel, and message commands", () => {
   const program = createProgram();
-  assert.deepEqual(program.commands.map((command) => command.name()), ["auth", "person", "chat", "channel", "message"]);
+  assert.deepEqual(program.commands.map((command) => command.name()), ["auth", "profile", "policy", "person", "chat", "channel", "message"]);
   assert.deepEqual(
     program.commands[0]?.commands.map((command) => command.name()),
     ["login", "refresh", "whoami", "tokens", "logout"],
   );
-  assert.deepEqual(program.commands[1]?.commands.map((command) => command.name()), ["search", "get", "image"]);
-  const imageCommand = program.commands[1]?.commands.find((command) => command.name() === "image");
+  assert.deepEqual(program.commands[1]?.commands.map((command) => command.name()), ["list", "show", "save", "remove"]);
+  assert.deepEqual(
+    program.commands[2]?.commands.map((command) => command.name()),
+    ["init", "list", "show", "check", "activate"],
+  );
+  assert.deepEqual(program.commands[3]?.commands.map((command) => command.name()), ["search", "get", "image"]);
+  const imageCommand = program.commands[3]?.commands.find((command) => command.name() === "image");
   assert.equal(imageCommand?.options.find((option) => option.long === "--size")?.defaultValue, "max");
-  assert.deepEqual(program.commands[2]?.commands.map((command) => command.name()), ["list", "get"]);
-  assert.deepEqual(program.commands[3]?.commands.map((command) => command.name()), ["list", "get"]);
-  assert.deepEqual(program.commands[4]?.commands.map((command) => command.name()), ["list", "get", "send"]);
+  assert.deepEqual(program.commands[4]?.commands.map((command) => command.name()), ["list", "get"]);
+  assert.deepEqual(program.commands[5]?.commands.map((command) => command.name()), ["list", "get"]);
+  assert.deepEqual(program.commands[6]?.commands.map((command) => command.name()), ["list", "get", "send"]);
   assert.equal(program.commands.some((command) => command.name() === "chats"), false);
+});
+
+test("activates a named policy and prints filesystem protection guidance", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-cli-policy-activate-"));
+  const subjectPath = await mkdtemp(join(tmpdir(), "teams-cli-policy-subject-"));
+  try {
+    const paths = storagePaths(root);
+    await initializePolicy(paths, "agent", {
+      profileName: "default",
+      tenantId: "tenant",
+      userId: "user",
+      browser: "edge",
+    }, [], subjectPath);
+    let stdout = "";
+    let stderr = "";
+    const originalWrite = process.stdout.write;
+    const originalErrorWrite = process.stderr.write;
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      stdout += chunk.toString();
+      return true;
+    }) as typeof process.stdout.write;
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      stderr += chunk.toString();
+      return true;
+    }) as typeof process.stderr.write;
+    try {
+      await createProgram({ storageRoot: root, subjectPath }).parseAsync([
+        "node", "teams-cli", "policy", "activate", "agent",
+      ]);
+    } finally {
+      process.stdout.write = originalWrite;
+      process.stderr.write = originalErrorWrite;
+    }
+
+    assert.equal((await resolvePolicyByName(paths, "agent")).policy.active, true);
+    assert.match(stdout, /Activated policy agent/);
+    assert.match(stderr, process.platform === "win32" ? /read-only ACL/ : /chmod 400/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(subjectPath, { recursive: true, force: true });
+  }
 });
 
 test("renders compact people and detailed person output", () => {

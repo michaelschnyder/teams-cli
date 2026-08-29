@@ -1,5 +1,7 @@
 node_modules/
 dist/
 .state/
+.e2e/
+.env.e2e.local
 *.log
 *.DS_Store

@@ -3,6 +3,7 @@ import { Argument, Command, Option } from "commander";
 import { realpathSync } from "node:fs";
 import { randomInt, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { stringify } from "yaml";
 import {
   describeSession,
   login,
@@ -15,15 +16,38 @@ import {
   type WhoamiResult,
 } from "./auth.js";
 import { withDataSession } from "./data.js";
+import type { DataTokenTarget } from "./auth.js";
 import { clearStatus, configureDiagnostics, showStatus } from "./diagnostics.js";
-import { requireAllowedTarget, type MessageTarget } from "./guardrails.js";
+import {
+  activatePolicy,
+  initializePolicy,
+  loadPolicyStore,
+  policyProtectionInstruction,
+  policyStatusWarnings,
+  requireMessageSend,
+  requirePolicyIdentity,
+  requireRawTokenExport,
+  resolvePolicies,
+  resolvePolicyByName,
+  type MessageTarget,
+  type ResolvedPolicies,
+} from "./policy.js";
+import {
+  loadProfiles,
+  removeProfile,
+  requireRuntimeIdentity,
+  resolveRuntimeContext,
+  saveProfile,
+  type RuntimeContext,
+  type RuntimeOverrides,
+} from "./config.js";
 import { decodeJwtClaims, formatDuration, readJwtMetadata, secondsUntil } from "./jwt.js";
-import type { BrowserName } from "./oauth.js";
 import {
   loadSession,
   requireCurrentSession,
   storagePaths,
-  type AnyStoredSession,
+  type Identity,
+  type StoragePaths,
   type StoredSession,
   type StoredToken,
 } from "./storage.js";
@@ -42,7 +66,6 @@ import {
   type ChannelResult,
   type ChatPage,
   type ChatResult,
-  type ChatSummary,
   type MessagePage,
   type MessageResult,
   type MessageSendResult,
@@ -54,6 +77,60 @@ import {
 } from "./teams-client.js";
 
 type TokenTarget = "all" | "access" | "skype" | "chat" | "search";
+type GlobalOptions = RuntimeOverrides & { debug?: boolean };
+
+type AuthorizedRuntime = {
+  context: RuntimeContext;
+  identity: Identity;
+  policies: ResolvedPolicies;
+  reportPolicyWarnings: (warnings: readonly string[]) => void;
+};
+
+function policyWarningReporter(): (warnings: readonly string[]) => void {
+  const reported = new Set<string>();
+  return (warnings) => {
+    for (const warning of warnings) {
+      if (reported.has(warning)) continue;
+      reported.add(warning);
+      process.stderr.write(`Warning: ${warning}.\n`);
+    }
+  };
+}
+
+async function runtimeContext(program: Command, paths: StoragePaths): Promise<RuntimeContext> {
+  return resolveRuntimeContext(paths, program.opts() as GlobalOptions);
+}
+
+async function authorizedRuntime(
+  program: Command,
+  paths: StoragePaths,
+  subjectStart?: string,
+  reportPolicyWarnings = policyWarningReporter(),
+): Promise<AuthorizedRuntime> {
+  const context = await runtimeContext(program, paths);
+  const identity = requireRuntimeIdentity(context);
+  const policies = await resolvePolicies(paths, subjectStart);
+  reportPolicyWarnings(policyStatusWarnings(policies));
+  reportPolicyWarnings(requirePolicyIdentity(policies, identity));
+  return { context, identity, policies, reportPolicyWarnings };
+}
+
+async function withAuthorizedDataSession<T>(
+  program: Command,
+  paths: StoragePaths,
+  subjectStart: string | undefined,
+  targets: DataTokenTarget | readonly DataTokenTarget[],
+  operation: (session: StoredSession, runtime: AuthorizedRuntime) => Promise<T>,
+): Promise<T> {
+  const runtime = await authorizedRuntime(program, paths, subjectStart);
+  return withDataSession(
+    paths,
+    runtime.identity,
+    runtime.context.browser,
+    targets,
+    (session) => operation(session, runtime),
+  );
+}
 
 function outputWhoami(result: WhoamiResult): void {
   const user = result.user;
@@ -105,10 +182,9 @@ export function renderTokens(
   ].join("\n\n") + "\n";
 }
 
-function storedToken(session: AnyStoredSession, target: Exclude<TokenTarget, "all">): StoredToken | null {
+function storedToken(session: StoredSession, target: Exclude<TokenTarget, "all">): StoredToken {
   if (target === "access") return session.accessToken;
   if (target === "skype") return session.skypeToken;
-  if (session.version === 1) return null;
   return target === "chat" ? session.chatToken : session.searchToken;
 }
 
@@ -134,27 +210,18 @@ export function renderRefreshResult(result: RefreshResult, now = new Date()): st
   const lines = [
     `Refreshed ${result.target === "all" ? "all Teams tokens" : `${result.target} token`}.`,
   ];
-  if (result.before.version === 1) lines.push("Previous session: version 1 (outdated)");
   for (const target of targets) {
     const previousToken = storedToken(result.before, target);
     const currentToken = storedToken(result.after, target);
-    const current = currentToken ? describeStoredToken(currentToken, now) : null;
+    const current = describeStoredToken(currentToken, now);
     lines.push(`${labels[target]}:`);
-    if (previousToken) {
-      const previous = describeStoredToken(previousToken, now);
-      lines.push(
-        `  Before audience: ${previous.audience ?? "unknown"}`,
-        `  Before expiry: ${previous.expiresAt} (${formatDuration(previous.expiresInSeconds)} remaining)`,
-      );
-    } else {
-      lines.push("  Before: unavailable in the outdated session");
-    }
-    if (current) {
-      lines.push(
-        `  After audience: ${current.audience ?? "unknown"}`,
-        `  After expiry: ${current.expiresAt} (${formatDuration(current.expiresInSeconds)} remaining)`,
-      );
-    }
+    const previous = describeStoredToken(previousToken, now);
+    lines.push(
+      `  Before audience: ${previous.audience ?? "unknown"}`,
+      `  Before expiry: ${previous.expiresAt} (${formatDuration(previous.expiresInSeconds)} remaining)`,
+      `  After audience: ${current.audience ?? "unknown"}`,
+      `  After expiry: ${current.expiresAt} (${formatDuration(current.expiresInSeconds)} remaining)`,
+    );
   }
   return `${lines.join("\n")}\n`;
 }
@@ -316,6 +383,16 @@ function parsePageSize(raw: string): number {
 
 type TargetOptions = { chat?: string; channel?: string };
 
+function collect(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
+function policyDecisionSummary(resolved: ResolvedPolicies): string {
+  const active = resolved.policies.filter(({ policy }) => policy.active).length;
+  if (active === 0) return "Allowed: no active policy applies.\n";
+  return `Allowed by ${active} active polic${active === 1 ? "y" : "ies"}.\n`;
+}
+
 export function selectedTarget(options: TargetOptions): MessageTarget {
   if ((options.chat ? 1 : 0) + (options.channel ? 1 : 0) !== 1) {
     throw new Error("Exactly one of --chat or --channel is required");
@@ -352,28 +429,57 @@ async function runWithStatus<T>(
   }
 }
 
-export function createProgram(): Command {
-  const paths = storagePaths();
+export function createProgram(options: { storageRoot?: string; subjectPath?: string } = {}): Command {
+  const paths = storagePaths(options.storageRoot);
+  const subjectPath = options.subjectPath;
   const program = new Command()
     .name("teams-cli")
     .description("A minimal command-line client for a persistent Microsoft Teams session")
     .version("0.1.0")
     .option("--debug", "Show sanitized HTTP request diagnostics")
+    .option("--profile <name>", "Named configuration profile")
+    .option("--tenant <tenant-id>", "Microsoft tenant ID")
+    .option("--user <user-id>", "Microsoft user object ID")
+    .addOption(new Option("--browser <browser>", "Browser used for Microsoft sign-in").choices(["edge", "chrome"]))
     .showHelpAfterError();
   const auth = program.command("auth").description("Manage Microsoft Teams authentication");
 
   auth
     .command("login")
     .description("Sign in with Microsoft and save the Teams session")
-    .option("--tenant <tenant-id>", "Microsoft tenant ID")
-    .addOption(
-      new Option("--browser <browser>", "Browser used for Microsoft sign-in")
-        .choices(["edge", "chrome"])
-        .default("edge"),
-    )
-    .action(async (options: { browser: BrowserName; tenant?: string }) => {
-      process.stderr.write(`Opening ${options.browser === "edge" ? "Microsoft Edge" : "Google Chrome"} for Teams sign-in…\n`);
-      const session = await runWithStatus(program, false, "Signing in…", () => login(paths, options));
+    .option("--username <login-name>", "Microsoft login name used by automated login")
+    .option("--password-command <absolute-path>", "Executable that writes the password to stdout")
+    .option("--headless", "Run automated login without a visible browser")
+    .action(async (loginOptions: { username?: string; passwordCommand?: string; headless?: boolean }) => {
+      const context = await runtimeContext(program, paths);
+      const policies = await resolvePolicies(paths, subjectPath);
+      const reportPolicyWarnings = policyWarningReporter();
+      reportPolicyWarnings(policyStatusWarnings(policies));
+      if (context.tenantId && context.userId) {
+        reportPolicyWarnings(requirePolicyIdentity(policies, {
+          tenantId: context.tenantId,
+          userId: context.userId,
+        }));
+      }
+      const selectedUsername = loginOptions.username ?? context.username;
+      process.stderr.write(`Opening ${context.browser === "edge" ? "Microsoft Edge" : "Google Chrome"} for Teams sign-in…\n`);
+      const session = await runWithStatus(program, false, "Signing in…", () => login(paths, {
+        browser: context.browser,
+        ...(context.tenantId ? { tenant: context.tenantId } : {}),
+        ...(context.userId ? { user: context.userId } : {}),
+        ...(selectedUsername ? { username: selectedUsername } : {}),
+        ...(loginOptions.passwordCommand ? { passwordCommand: loginOptions.passwordCommand } : {}),
+        ...(loginOptions.headless ? { headless: true } : {}),
+        authorizeIdentity: async (identity) => {
+          reportPolicyWarnings(requirePolicyIdentity(policies, identity));
+        },
+      }));
+      await saveProfile(paths, context.profileName, {
+        tenantId: session.tenantId,
+        userId: session.userId,
+        ...(session.username ? { username: session.username } : selectedUsername ? { username: selectedUsername } : {}),
+        browser: context.browser,
+      });
       process.stdout.write(`Logged in to tenant ${session.tenantId}.\n`);
     });
 
@@ -386,7 +492,9 @@ export function createProgram(): Command {
         .default("all"),
     )
     .action(async (target: RefreshTarget) => {
-      const result = await runWithStatus(program, false, `Refreshing ${target} token${target === "all" ? "s" : ""}…`, () => refreshTokens(paths, target));
+      const runtime = await authorizedRuntime(program, paths, subjectPath);
+      const result = await runWithStatus(program, false, `Refreshing ${target} token${target === "all" ? "s" : ""}…`, () =>
+        refreshTokens(paths, runtime.identity, target, runtime.context.browser));
       process.stdout.write(renderRefreshResult(result));
     });
 
@@ -394,7 +502,9 @@ export function createProgram(): Command {
     .command("whoami")
     .description("Validate the saved session and show its user and token expiry")
     .action(async () => {
-      const session = await runWithStatus(program, false, "Validating session…", () => validateSession(paths));
+      const runtime = await authorizedRuntime(program, paths, subjectPath);
+      const session = await runWithStatus(program, false, "Validating session…", () =>
+        validateSession(paths, runtime.identity, runtime.context.browser));
       outputWhoami(describeSession(session));
     });
 
@@ -408,17 +518,139 @@ export function createProgram(): Command {
         .default("all"),
     )
     .option("--decode", "Show only the decoded JWT claims")
-    .action(async (target: TokenTarget, options: { decode?: boolean }) => {
-      const session = requireCurrentSession(await loadSession(paths));
-      process.stdout.write(renderTokens(session, target, options.decode ?? false));
+    .action(async (target: TokenTarget, tokenOptions: { decode?: boolean }) => {
+      const runtime = await authorizedRuntime(program, paths, subjectPath);
+      if (!tokenOptions.decode) {
+        runtime.reportPolicyWarnings(requireRawTokenExport(runtime.policies, runtime.identity));
+      }
+      const session = requireCurrentSession(await loadSession(paths, runtime.identity));
+      process.stdout.write(renderTokens(session, target, tokenOptions.decode ?? false));
     });
 
   auth
     .command("logout")
     .description("Remove the saved session and dedicated browser profiles")
     .action(async () => {
-      await logout(paths);
+      const runtime = await authorizedRuntime(program, paths, subjectPath);
+      await logout(paths, runtime.identity);
       process.stdout.write("Logged out. Local Teams tokens and browser profiles were removed.\n");
+    });
+
+  const profile = program.command("profile").description("Manage named configuration profiles");
+  profile.command("list").description("List configured profiles").action(async () => {
+    const config = await loadProfiles(paths);
+    const names = Object.keys(config.profiles).sort();
+    process.stdout.write(names.length ? `${names.join("\n")}\n` : "No profiles configured.\n");
+  });
+  profile.command("show").description("Show one profile or the selected profile")
+    .argument("[name]", "Profile name")
+    .action(async (name?: string) => {
+      const context = await runtimeContext(program, paths);
+      const profileName = name ?? context.profileName;
+      const config = await loadProfiles(paths);
+      const stored = config.profiles[profileName];
+      if (!stored) throw new Error(`Profile ${profileName} does not exist`);
+      process.stdout.write(stringify({ name: profileName, ...stored }));
+    });
+  profile.command("save").description("Save the effective tenant, user, and browser as a profile")
+    .argument("<name>", "Profile name")
+    .action(async (name: string) => {
+      const context = await runtimeContext(program, paths);
+      const identity = requireRuntimeIdentity(context);
+      const session = requireCurrentSession(await loadSession(paths, identity));
+      await saveProfile(paths, name, {
+        ...identity,
+        ...(session.username ? { username: session.username } : {}),
+        browser: context.browser,
+      });
+      process.stdout.write(`Saved profile ${name}.\n`);
+    });
+  profile.command("remove").description("Remove profile configuration without deleting its session")
+    .argument("<name>", "Profile name")
+    .action(async (name: string) => {
+      if (!await removeProfile(paths, name)) throw new Error(`Profile ${name} does not exist`);
+      process.stdout.write(`Removed profile ${name}. Authentication was retained.\n`);
+    });
+
+  const policy = program.command("policy").description("Manage subject-based safety policies");
+  policy.command("init").description("Create a restrictive inactive policy")
+    .argument("<name>", "Policy name")
+    .option("--subject <absolute-path-glob>", "Subject path glob; repeat for multiple paths", collect, [])
+    .action(async (name: string, policyOptions: { subject: string[] }) => {
+      const context = await runtimeContext(program, paths);
+      const record = await initializePolicy(paths, name, context, policyOptions.subject, subjectPath);
+      process.stdout.write(`Created inactive policy ${record.policy.name} at ${record.file}.\n`);
+      process.stderr.write("Warning: The policy is in audit mode and is not enforcing restrictions.\n");
+    });
+  policy.command("list").description("List all policies")
+    .action(async () => {
+      const records = await loadPolicyStore(paths);
+      if (records.length === 0) {
+        process.stdout.write("No policies configured.\n");
+        return;
+      }
+      for (const record of records) {
+        process.stdout.write(`${record.policy.name}\t${record.policy.active ? "active" : "inactive"}\t${record.file}\n`);
+      }
+    });
+  policy.command("show").description("Show one named policy or policies applying to a path")
+    .argument("[name]", "Policy name")
+    .option("--path <path>", "Concrete subject path to evaluate")
+    .action(async (name: string | undefined, policyOptions: { path?: string }) => {
+      const reportWarnings = policyWarningReporter();
+      if (name) {
+        const record = await resolvePolicyByName(paths, name);
+        reportWarnings(record.permissionWarnings);
+        process.stdout.write(`# ${record.file}\n${stringify(record.policy)}`);
+        return;
+      }
+      const resolved = await resolvePolicies(paths, policyOptions.path ?? subjectPath);
+      reportWarnings(policyStatusWarnings(resolved));
+      if (resolved.policies.length === 0) {
+        process.stdout.write(`No policy applies to subject path ${resolved.subjectPath}.\n`);
+        return;
+      }
+      for (const [index, record] of resolved.policies.entries()) {
+        if (index > 0) process.stdout.write("---\n");
+        process.stdout.write(`# ${record.file}\n${stringify(record.policy)}`);
+      }
+    });
+  const policyCheck = policy.command("check").description("Check an effective policy decision");
+  policyCheck.command("send").description("Check a chat or channel send")
+    .option("--chat <chat-id>", "Target chat ID")
+    .option("--channel <channel-id>", "Target channel ID")
+    .option("--path <path>", "Concrete subject path to evaluate")
+    .action(async (checkOptions: TargetOptions & { path?: string }) => {
+      const context = await runtimeContext(program, paths);
+      const identity = requireRuntimeIdentity(context);
+      const resolved = await resolvePolicies(paths, checkOptions.path ?? subjectPath);
+      const reportWarnings = policyWarningReporter();
+      reportWarnings(policyStatusWarnings(resolved));
+      reportWarnings(requireMessageSend(resolved, identity, selectedTarget(checkOptions)));
+      process.stdout.write(policyDecisionSummary(resolved));
+    });
+  policyCheck.command("raw-tokens").description("Check raw bearer-token export")
+    .option("--path <path>", "Concrete subject path to evaluate")
+    .action(async (checkOptions: { path?: string }) => {
+      const context = await runtimeContext(program, paths);
+      const identity = requireRuntimeIdentity(context);
+      const resolved = await resolvePolicies(paths, checkOptions.path ?? subjectPath);
+      const reportWarnings = policyWarningReporter();
+      reportWarnings(policyStatusWarnings(resolved));
+      reportWarnings(requireRawTokenExport(resolved, identity));
+      process.stdout.write(policyDecisionSummary(resolved));
+    });
+  policy.command("activate").description("Activate one policy for enforcement")
+    .argument("<name>", "Policy name")
+    .action(async (name: string) => {
+      const activated = await activatePolicy(await resolvePolicyByName(paths, name));
+      process.stdout.write(`Activated policy ${activated.policy.name} at ${activated.file}.\n`);
+      const instruction = policyProtectionInstruction(activated.file);
+      if (instruction) {
+        process.stderr.write(`Recommended additional protection: ${instruction}\n`);
+      } else {
+        process.stderr.write("Protect the active policy with an administrator-managed read-only ACL.\n");
+      }
     });
 
   const person = program.command("person").description("Search and inspect Microsoft Teams people");
@@ -428,7 +660,7 @@ export function createProgram(): Command {
     .option("--json", "Output stable JSON")
     .action(async (query: string, options: { json?: boolean }) => {
       const result = await runWithStatus(program, options.json ?? false, "Searching for people…", () =>
-        withDataSession(paths, "search", (session) => searchPeople(session, query)));
+        withAuthorizedDataSession(program, paths, subjectPath, "search", (session) => searchPeople(session, query)));
       writeData(result, renderPeople(result), options.json ?? false);
     });
   person.command("get")
@@ -437,7 +669,7 @@ export function createProgram(): Command {
     .option("--json", "Output stable JSON")
     .action(async (identifier: string, options: { json?: boolean }) => {
       const result = await runWithStatus(program, options.json ?? false, "Loading person profile…", () =>
-        withDataSession(paths, "access", (session) => getPerson(session, identifier)));
+        withAuthorizedDataSession(program, paths, subjectPath, "access", (session) => getPerson(session, identifier)));
       writeData(result, renderPerson(result), options.json ?? false);
     });
   person.command("image")
@@ -455,7 +687,7 @@ export function createProgram(): Command {
         personImageOutput({ data: Buffer.alloc(0), contentType: "application/octet-stream" }, false, true);
       }
       const result = await runWithStatus(program, base64, "Loading person image…", () =>
-        withDataSession(paths, "access", (session) => getPersonImage(session, identifier, options.size)));
+        withAuthorizedDataSession(program, paths, subjectPath, "access", (session) => getPersonImage(session, identifier, options.size)));
       process.stdout.write(personImageOutput(result, base64, Boolean(process.stdout.isTTY)));
     });
 
@@ -467,7 +699,7 @@ export function createProgram(): Command {
     .option("--json", "Output stable JSON")
     .action(async (options: { cursor?: string; json?: boolean }) => {
       const result = await runWithStatus(program, options.json ?? false, "Loading chats…", () =>
-        withDataSession(paths, ["chat", "skype"], (session) => listChats(session, options.cursor)));
+        withAuthorizedDataSession(program, paths, subjectPath, ["chat", "skype"], (session) => listChats(session, options.cursor)));
       writeData(result, renderChats(result), options.json ?? false);
     });
   chat
@@ -477,7 +709,7 @@ export function createProgram(): Command {
     .option("--json", "Output stable JSON")
     .action(async (chatId: string, options: { json?: boolean }) => {
       const result = await runWithStatus(program, options.json ?? false, "Loading chat…", () =>
-        withDataSession(paths, ["chat", "skype"], (session) => getChat(session, chatId)));
+        withAuthorizedDataSession(program, paths, subjectPath, ["chat", "skype"], (session) => getChat(session, chatId)));
       writeData(result, renderChatResult(result), options.json ?? false);
     });
 
@@ -486,7 +718,7 @@ export function createProgram(): Command {
     .option("--json", "Output stable JSON")
     .action(async (options: { json?: boolean }) => {
       const result = await runWithStatus(program, options.json ?? false, "Loading channels…", () =>
-        withDataSession(paths, ["chat", "skype"], (session) => listChannels(session)));
+        withAuthorizedDataSession(program, paths, subjectPath, ["chat", "skype"], (session) => listChannels(session)));
       writeData(result, renderChannels(result), options.json ?? false);
     });
   channel.command("get").description("Get one channel by ID")
@@ -494,7 +726,7 @@ export function createProgram(): Command {
     .option("--json", "Output stable JSON")
     .action(async (channelId: string, options: { json?: boolean }) => {
       const result = await runWithStatus(program, options.json ?? false, "Loading channel…", () =>
-        withDataSession(paths, ["chat", "skype"], (session) => getChannel(session, channelId)));
+        withAuthorizedDataSession(program, paths, subjectPath, ["chat", "skype"], (session) => getChannel(session, channelId)));
       writeData(result, renderChannelResult(result), options.json ?? false);
     });
 
@@ -515,7 +747,7 @@ export function createProgram(): Command {
       }
       const target = selectedTarget(options);
       const result = await runWithStatus(program, options.json ?? false, "Fetching messages…", () =>
-        withDataSession(paths, "skype", (session) => listMessages(session, target, options)));
+        withAuthorizedDataSession(program, paths, subjectPath, "skype", (session) => listMessages(session, target, options)));
       writeData(result, renderMessages(result), options.json ?? false);
     });
   message.command("get").description("Get one message by ID")
@@ -526,10 +758,10 @@ export function createProgram(): Command {
     .action(async (messageId: string, options: TargetOptions & { json?: boolean }) => {
       const target = selectedTarget(options);
       const result = await runWithStatus(program, options.json ?? false, "Fetching message…", () =>
-        withDataSession(paths, "skype", (session) => getMessage(session, target, messageId)));
+        withAuthorizedDataSession(program, paths, subjectPath, "skype", (session) => getMessage(session, target, messageId)));
       writeData(result, renderMessageResult(result), options.json ?? false);
     });
-  message.command("send").description("Send one allowlisted plain-text message")
+  message.command("send").description("Send one policy-authorized plain-text message")
     .option("--chat <chat-id>", "Target chat ID")
     .option("--channel <channel-id>", "Target channel ID")
     .option("--body <text>", "Plain-text message body; otherwise read stdin")
@@ -540,12 +772,25 @@ export function createProgram(): Command {
       const requestId = `${Date.now()}${randomInt(1_000_000).toString().padStart(6, "0")}`;
       const sessionId = randomUUID();
       const result = await runWithStatus(program, options.json ?? false, "Sending message…", async () => {
-        await requireAllowedTarget(paths, target);
+        const runtime = await authorizedRuntime(program, paths, subjectPath);
+        runtime.reportPolicyWarnings(requireMessageSend(runtime.policies, runtime.identity, target));
         return withDataSession(
           paths,
+          runtime.identity,
+          runtime.context.browser,
           "skype",
-          (session) => sendMessage(session, target, body, requestId, sessionId),
-          () => requireAllowedTarget(paths, target),
+          (session) => sendMessage(
+            session,
+            target,
+            body,
+            requestId,
+            sessionId,
+            async () => {
+              const currentPolicies = await resolvePolicies(paths, subjectPath);
+              runtime.reportPolicyWarnings(policyStatusWarnings(currentPolicies));
+              runtime.reportPolicyWarnings(requireMessageSend(currentPolicies, runtime.identity, target));
+            },
+          ),
         );
       });
       writeData(result, renderMessageSendResult(result), options.json ?? false);
