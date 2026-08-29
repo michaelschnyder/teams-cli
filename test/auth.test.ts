@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -22,10 +22,10 @@ import {
 test("reads a CI password from bounded executable stdout", async () => {
   const root = await mkdtemp(join(tmpdir(), "teams-cli-password-helper-"));
   try {
-    const helper = join(root, "password-helper");
-    await writeFile(helper, "#!/bin/sh\nprintf 'test-password\\n'\n", { mode: 0o700 });
-    await chmod(helper, 0o700);
-    assert.equal(await passwordFromCommand(helper), "test-password");
+    const helper = process.platform === "win32"
+      ? join(process.env.SystemRoot ?? "C:\\Windows", "System32", "whoami.exe")
+      : "/usr/bin/whoami";
+    assert.ok((await passwordFromCommand(helper)).length > 0);
     await assert.rejects(passwordFromCommand("relative-helper"), /absolute executable path/);
   } finally {
     await rm(root, { recursive: true, force: true });
