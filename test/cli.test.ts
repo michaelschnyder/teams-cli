@@ -12,6 +12,7 @@ import {
   renderTokens,
   selectedTarget,
 } from "../src/cli.js";
+import { CLI_VERSION } from "../src/version.js";
 import { initializePolicy, resolvePolicyByName } from "../src/policy.js";
 import { storagePaths, type StoredSession } from "../src/storage.js";
 
@@ -33,24 +34,27 @@ const session: StoredSession = {
   endpoints: { chatService: "https://emea.ng.msg.teams.microsoft.com" },
 };
 
-test("exposes auth, profile, policy, person, chat, channel, and message commands", () => {
+test("exposes version, skills, auth, profile, policy, person, chat, channel, and message commands", () => {
   const program = createProgram();
-  assert.deepEqual(program.commands.map((command) => command.name()), ["auth", "profile", "policy", "person", "chat", "channel", "message"]);
+  assert.equal(program.version(), CLI_VERSION);
+  assert.deepEqual(program.commands.map((command) => command.name()), ["version", "skills", "auth", "profile", "policy", "person", "chat", "channel", "message"]);
+  const command = (name: string) => program.commands.find((candidate) => candidate.name() === name);
   assert.deepEqual(
-    program.commands[0]?.commands.map((command) => command.name()),
+    command("auth")?.commands.map((child) => child.name()),
     ["login", "refresh", "whoami", "tokens", "logout"],
   );
-  assert.deepEqual(program.commands[1]?.commands.map((command) => command.name()), ["list", "show", "save", "remove"]);
+  assert.deepEqual(command("skills")?.commands.map((child) => child.name()), ["list", "path", "install", "reinstall"]);
+  assert.deepEqual(command("profile")?.commands.map((child) => child.name()), ["list", "show", "save", "remove"]);
   assert.deepEqual(
-    program.commands[2]?.commands.map((command) => command.name()),
+    command("policy")?.commands.map((child) => child.name()),
     ["init", "list", "show", "check", "activate"],
   );
-  assert.deepEqual(program.commands[3]?.commands.map((command) => command.name()), ["search", "get", "image"]);
-  const imageCommand = program.commands[3]?.commands.find((command) => command.name() === "image");
+  assert.deepEqual(command("person")?.commands.map((child) => child.name()), ["search", "get", "image"]);
+  const imageCommand = command("person")?.commands.find((child) => child.name() === "image");
   assert.equal(imageCommand?.options.find((option) => option.long === "--size")?.defaultValue, "max");
-  assert.deepEqual(program.commands[4]?.commands.map((command) => command.name()), ["list", "get"]);
-  assert.deepEqual(program.commands[5]?.commands.map((command) => command.name()), ["list", "get"]);
-  assert.deepEqual(program.commands[6]?.commands.map((command) => command.name()), ["list", "get", "send"]);
+  assert.deepEqual(command("chat")?.commands.map((child) => child.name()), ["list", "get"]);
+  assert.deepEqual(command("channel")?.commands.map((child) => child.name()), ["list", "get"]);
+  assert.deepEqual(command("message")?.commands.map((child) => child.name()), ["list", "get", "send"]);
   assert.equal(program.commands.some((command) => command.name() === "chats"), false);
 });
 

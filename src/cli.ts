@@ -75,6 +75,10 @@ import {
   type PersonResult,
   type PersonSearchResult,
 } from "./teams-client.js";
+import { registerSkillsCommand } from "./commands/skills.js";
+import { registerVersionCommand } from "./commands/version.js";
+import { prepareUpdateNotification, runUpdateWorker } from "./update.js";
+import { CLI_VERSION } from "./version.js";
 
 type TokenTarget = "all" | "access" | "skype" | "chat" | "search";
 type GlobalOptions = RuntimeOverrides & { debug?: boolean };
@@ -434,14 +438,17 @@ export function createProgram(options: { storageRoot?: string; subjectPath?: str
   const subjectPath = options.subjectPath;
   const program = new Command()
     .name("teams-cli")
-    .description("A minimal command-line client for a persistent Microsoft Teams session")
-    .version("0.1.0")
+    .description("A safety-conscious command-line client for persistent Microsoft Teams sessions")
+    .version(CLI_VERSION)
     .option("--debug", "Show sanitized HTTP request diagnostics")
     .option("--profile <name>", "Named configuration profile")
     .option("--tenant <tenant-id>", "Microsoft tenant ID")
     .option("--user <user-id>", "Microsoft user object ID")
     .addOption(new Option("--browser <browser>", "Browser used for Microsoft sign-in").choices(["edge", "chrome"]))
     .showHelpAfterError();
+
+  registerVersionCommand(program);
+  registerSkillsCommand(program, options.storageRoot);
   const auth = program.command("auth").description("Manage Microsoft Teams authentication");
 
   auth
@@ -801,7 +808,17 @@ export function createProgram(options: { storageRoot?: string; subjectPath?: str
 
 const entrypoint = process.argv[1];
 if (entrypoint && realpathSync(entrypoint) === realpathSync(fileURLToPath(import.meta.url))) {
-  createProgram().parseAsync(process.argv).catch((error: unknown) => {
+  const run = async () => {
+    if (process.argv[2] === "--internal-update-check" && process.env.TEAMS_CLI_UPDATE_WORKER === "1") {
+      const currentVersion = process.argv[3];
+      const file = process.argv[4];
+      if (currentVersion && file) await runUpdateWorker(currentVersion, file);
+      return;
+    }
+    await prepareUpdateNotification({ currentVersion: CLI_VERSION });
+    await createProgram().parseAsync(process.argv);
+  };
+  run().catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     process.stderr.write(`${message}\n`);
     process.exitCode = 1;

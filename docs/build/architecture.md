@@ -12,3 +12,7 @@ Profiles and sessions are deliberately separate:
 Message authorization occurs inside the exported send service immediately before each POST. The lower-level message transport is not exported. Retries call the same authorized operation again, so policy is resolved and checked for every attempt.
 
 The current policy resolver supports path subjects with multiple absolute glob patterns. Its result type and capability checks are kept separate from command parsing so additional machine, user, or organization subjects can later be intersected without changing command semantics.
+
+The published package has a CLI-only interface. Domain services for authentication, storage, policy evaluation, and Teams requests are internal modules rather than supported library exports. Release-support modules independently own package version discovery, advisory update state, global npm upgrades, and managed agent-skill installations.
+
+Builds clean `dist` before compiling and then copy declarative skill resources. Tests are compiled only at runtime by the test runner and never enter the npm tarball. Package validation rejects source, tests, E2E configuration, internal build notes, and workflow files.
