@@ -17,7 +17,7 @@ subject:
 
 The paths within one policy are alternatives: matching any one makes that policy applicable. Several policies may apply to the same subject. Every active policy must allow an operation, so adding another active policy can only preserve or narrow access.
 
-The CLI validates every `.yaml` file in the policy directory before matching. An unreadable, malformed, misnamed, unsupported, or dangerously writable active policy puts authenticated operations into fail-safe mode across every subject. Files without a `.yaml` extension are not policies and are ignored. The obsolete `policies/workspaces/` layout is rejected explicitly so an earlier restriction cannot disappear silently.
+The CLI validates every `.yaml` file in the policy directory before matching. An unreadable, malformed, misnamed, unsupported, or dangerously writable active policy puts authenticated operations into fail-safe mode across every subject. Files without a `.yaml` extension are not policies and are ignored.
 
 ## Inactive and active policies
 
@@ -51,7 +51,7 @@ Subject patterns must be absolute. Quote patterns so the shell does not expand t
 The generated policy is restrictive and inactive:
 
 ```yaml
-version: 2
+version: 1
 name: project-agent
 active: false
 subject:

@@ -56,8 +56,8 @@ The effective runtime context is resolved in this order:
 
 Named profiles do not inherit fields from the `default` profile. Flags and
 environment variables may override profile values, but the resolved identity remains
-subject to any applicable workspace policy described by
-[ADR 0005](0005-enforce-workspace-policies-at-message-boundary.md).
+subject to any applicable subject-path policies described by
+[ADR 0005](0005-enforce-subject-path-policies-at-message-boundary.md).
 
 Profiles are stored as strictly parsed, versioned YAML in
 `~/.teams-cli/config.yaml`. Unknown fields, duplicate keys, and YAML aliases are

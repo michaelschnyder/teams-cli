@@ -39,15 +39,15 @@ Policies are optional. Inactive policies audit and warn without enforcing; activ
 
 ## Further documentation
 
-- [Authentication and token handling](use/authentication.md)
-- [Profiles and configuration precedence](use/profiles.md)
-- [Workspace policies](use/policies.md)
-- [Security model](build/security-model.md)
-- [Architecture](build/architecture.md)
-- [Testing](build/testing.md)
+- [Authentication and token handling](docs/use/authentication.md)
+- [Profiles and configuration precedence](docs/use/profiles.md)
+- [Workspace policies](docs/use/policies.md)
+- [Security model](docs/build/security-model.md)
+- [Architecture](docs/build/architecture.md)
+- [Testing](docs/build/testing.md)
 
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development commands, architecture references, and project conventions.
 
-Live Microsoft Teams validation is isolated from the normal suite. Configure the ignored `.env.e2e.local` as described in [the testing guide](build/testing.md), then run `npm run test:e2e`.
+Live Microsoft Teams validation is isolated from the normal suite. Configure the ignored `.env.e2e.local` as described in [the testing guide](docs/build/testing.md), then run `npm run test:e2e`.

@@ -27,7 +27,7 @@ import { parseStrictYaml, rejectUnknownKeys, requireObject } from "./yaml.js";
 export type MessageTarget = { kind: "chat" | "channel"; id: string };
 
 export type Policy = {
-  version: 2;
+  version: 1;
   name: string;
   active: boolean;
   subject: { paths: string[] };
@@ -90,7 +90,7 @@ function validateSubjectPaths(value: unknown): string[] {
 export function parsePolicy(value: unknown): Policy {
   const root = requireObject(value, "Policy");
   rejectUnknownKeys(root, ["version", "name", "active", "subject", "identity", "allow"], "Policy");
-  if (root.version !== 2) throw new Error("Policy version must be 2");
+  if (root.version !== 1) throw new Error("Policy version must be 1");
   if (typeof root.name !== "string") throw new Error("Policy.name must be a string");
   const name = validatePolicyName(root.name);
   if (typeof root.active !== "boolean") throw new Error("Policy.active must be a boolean");
@@ -131,7 +131,7 @@ export function parsePolicy(value: unknown): Policy {
   }
 
   return {
-    version: 2,
+    version: 1,
     name,
     active: root.active,
     subject,
@@ -251,11 +251,6 @@ export async function loadPolicyStore(paths: StoragePaths): Promise<PolicyRecord
   }
 
   const policies: PolicyRecord[] = [];
-  if (entries.some((entry) => entry.name === "workspaces" && entry.isDirectory())) {
-    throw new Error(
-      `Policy denied operation: legacy policy directory ${join(paths.policiesDirectory, "workspaces")} must be migrated or removed`,
-    );
-  }
   for (const entry of entries.filter(({ name }) => name.endsWith(".yaml")).sort((a, b) =>
     a.name.localeCompare(b.name))) {
     const file = join(paths.policiesDirectory, entry.name);
@@ -372,7 +367,7 @@ export async function initializePolicy(
     ? validateSubjectPaths([...subjectPaths])
     : [subjectPath, join(subjectPath, "**")];
   const policy: Policy = {
-    version: 2,
+    version: 1,
     name,
     active: false,
     subject: { paths: pathsToStore },

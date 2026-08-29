@@ -177,7 +177,7 @@ async function configureActivePolicy(
     browser,
   }, [], repository);
   await writeFile(initialized.file, stringify({
-    version: 2,
+    version: 1,
     name: "e2e",
     active: false,
     subject: { paths: [repository] },

@@ -13,8 +13,8 @@ Keep command handlers small, preserve exact identity and policy checks, and plac
 
 Start with:
 
-- [Architecture](build/architecture.md)
-- [Security model](build/security-model.md)
-- [Testing strategy](build/testing.md)
-- [Research and inspirations](build/inspirations.md)
-- [Architecture decisions](build/adr/0001-browser-backed-private-teams-api.md)
+- [Architecture](docs/build/architecture.md)
+- [Security model](docs/build/security-model.md)
+- [Testing strategy](docs/build/testing.md)
+- [Research and inspirations](docs/build/inspirations.md)
+- [Architecture decisions](docs/build/adr/0001-browser-backed-private-teams-api.md)

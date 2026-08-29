@@ -104,7 +104,7 @@ test("inactive policies audit while active policy denials make zero message POST
     assert.equal(requests, 1);
 
     await writeFile(policy.file, stringify({
-      version: 2,
+      version: 1,
       name: "e2e",
       active: true,
       subject: { paths: [subjectPath] },

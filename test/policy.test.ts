@@ -22,7 +22,7 @@ const identity = { tenantId: "tenant", userId: "user" };
 
 function policy(name: string, active = true): Policy {
   return parsePolicy({
-    version: 2,
+    version: 1,
     name,
     active,
     subject: { paths: ["/workspace", "/projects/*"] },
@@ -76,7 +76,7 @@ test("intersects active policies and audits inactive policies", () => {
 test("rejects policy fields beyond the versioned schema", () => {
   assert.throws(
     () => parsePolicy({
-      version: 2,
+      version: 1,
       name: "example",
       active: false,
       subject: { paths: ["/workspace"] },
@@ -85,13 +85,13 @@ test("rejects policy fields beyond the versioned schema", () => {
     /unknown field command/,
   );
   assert.throws(
-    () => parsePolicy({ version: 1, name: "legacy", active: false, subject: { paths: ["/workspace"] } }),
-    /version must be 2/,
+    () => parsePolicy({ version: 2, name: "unsupported", active: false, subject: { paths: ["/workspace"] } }),
+    /version must be 1/,
   );
 });
 
 test("rejects duplicate YAML keys and aliases", () => {
-  assert.throws(() => parseStrictYaml("version: 2\nversion: 2\n", "Policy"), /unique/);
+  assert.throws(() => parseStrictYaml("version: 1\nversion: 1\n", "Policy"), /unique/);
   assert.throws(() => parseStrictYaml("value: &shared [one]\ncopy: *shared\n", "Policy"), /Alias resolution is disabled/);
 });
 
