@@ -12,10 +12,11 @@ const environment = {
   NO_UPDATE_NOTIFIER: "1",
 };
 const expectedVersion = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
+const npm = process.platform === "win32" ? "npm.cmd" : "npm";
 let tarball;
 
 try {
-  const parsed = JSON.parse(execFileSync("npm", ["pack", "--json", "--ignore-scripts"], {
+  const parsed = JSON.parse(execFileSync(npm, ["pack", "--json", "--ignore-scripts"], {
     cwd: root,
     encoding: "utf8",
     env: environment,
@@ -23,7 +24,7 @@ try {
   const { filename } = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0];
   tarball = join(root, filename);
   const prefix = join(temporary, "prefix");
-  execFileSync("npm", ["install", "--global", "--prefix", prefix, tarball], {
+  execFileSync(npm, ["install", "--global", "--prefix", prefix, tarball], {
     stdio: "inherit",
     env: environment,
   });
