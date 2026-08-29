@@ -89,7 +89,7 @@ export async function runUpdateWorker(
     ...(previous?.pendingVersion ? { pendingVersion: previous.pendingVersion } : {}),
   };
   try {
-    const encodedName = PACKAGE_NAME.replace("/", "%2F");
+    const encodedName = encodeURIComponent(PACKAGE_NAME);
     const response = await fetcher(`https://registry.npmjs.org/${encodedName}/latest`, {
       headers: { accept: "application/json" },
       signal: AbortSignal.timeout(UPDATE_TIMEOUT_MS),
