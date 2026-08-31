@@ -51,6 +51,8 @@ test("secures the editor session and atomically saves a draft", async () => {
     assert.match(pageHtml, /For anyone not in the list, or when set to default/);
     assert.match(pageHtml, /Save and activate/);
     assert.match(pageHtml, /Close without saving/);
+    assert.doesNotMatch(pageHtml, /<header>.*id="connection"/);
+    assert.match(pageHtml, /dirtyState.*connectionMarkup/);
     assert.match(pageHtml, /data-copy-path/);
     assert.match(pageHtml, /\/api\/people\?q=/);
     assert.match(pageHtml, /\/api\/delete/);
