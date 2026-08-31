@@ -99,6 +99,7 @@ test("renders compact people and detailed person output", () => {
   const summary = {
     id: "person-1",
     mri: "8:orgid:person-1",
+    aliases: ["8:orgid:person-1"],
     displayName: "Ada Lovelace",
     email: "ada@example.com",
     jobTitle: "Programmer",

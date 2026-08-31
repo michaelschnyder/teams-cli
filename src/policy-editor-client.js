@@ -251,10 +251,24 @@ function addResource(resource) {
 }
 
 function renderSuggestions(resources) {
-  const unique = [...new Map(resources.map((resource) => [`${resource.kind}:${resource.id}`, resource])).values()]
-    .filter((resource) => !configuredIds(resource.kind).has(resource.id));
+  const unique = [...new Map(resources.map((resource) => [`${resource.kind}:${resource.id}`, resource])).values()];
+  const configured = (resource) => {
+    const candidates = new Set([resource.id, ...(resource.participantIds || [])]);
+    return [...configuredIds(resource.kind)].find((id) => candidates.has(id));
+  };
+  let hydrated = false;
+  for (const resource of unique) {
+    const configuredId = configured(resource);
+    if (!configuredId) continue;
+    addedResources.set(`${resource.kind}:${configuredId}`, { ...resource, id: configuredId });
+    hydrated = true;
+  }
+  if (hydrated) renderRuleRows();
   const target = document.getElementById("searchResults");
-  target.innerHTML = unique.map((resource, index) => `<div class="suggestion">${resourceLabel(resource)}<button type="button" data-add-result="${index}" class="primary">Add</button></div>`).join("");
+  target.innerHTML = unique.map((resource, index) => {
+    const alreadyAdded = Boolean(configured(resource));
+    return `<div class="suggestion">${resourceLabel(resource)}<button type="button" data-add-result="${index}" class="primary" ${alreadyAdded ? "disabled" : ""}>${alreadyAdded ? "Added" : "Add"}</button></div>`;
+  }).join("");
   target.classList.toggle("hidden", unique.length === 0);
   target.querySelectorAll("[data-add-result]").forEach((button) => { button.onclick = () => addResource(unique[Number(button.dataset.addResult)]); });
 }
@@ -279,7 +293,7 @@ function searchResources(query) {
     try {
       const result = await api(`/api/people?q=${encodeURIComponent(query)}`);
       if (sequence !== searchSequence) return;
-      renderSuggestions(result.people.map((person) => ({ kind: "person", id: person.id, label: person.displayName || person.email || person.id, detail: person.email || person.mri || person.id })));
+      renderSuggestions(result.people.map((person) => ({ kind: "person", id: person.id, participantIds: [person.mri, ...(person.aliases || [])].filter(Boolean), label: person.displayName || person.email || person.id, detail: person.email || person.mri || person.id })));
     } catch (error) {
       if (sequence === searchSequence) document.getElementById("message").innerHTML = `<div class="banner error">${esc(error.message)}</div>`;
     } finally {

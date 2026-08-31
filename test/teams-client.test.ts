@@ -75,7 +75,8 @@ test("searches people with the search token and preserves server ranking", async
         Suggestions: [
           {
             MRI: "8:orgid:person-2",
-            ObjectId: "person-2",
+            Id: "legacy-person-2@tenant",
+            ExternalDirectoryObjectId: "person-2",
             DisplayName: "Grace Hopper",
             EmailAddresses: [{ Address: "grace@example.com" }],
             JobTitle: "Rear Admiral",
@@ -96,6 +97,7 @@ test("searches people with the search token and preserves server ranking", async
   assert.deepEqual(result.people[0], {
     id: "person-2",
     mri: "8:orgid:person-2",
+    aliases: ["legacy-person-2@tenant", "8:orgid:person-2"],
     displayName: "Grace Hopper",
     email: "grace@example.com",
     jobTitle: "Rear Admiral",

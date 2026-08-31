@@ -18,7 +18,7 @@ import {
   type Policy,
 } from "./policy.js";
 import type { StoragePaths } from "./storage.js";
-import { listChannels, listChats, searchPeople, type ChatSummary, type ChannelSummary } from "./teams-client.js";
+import { getPerson, listChannels, listChats, searchPeople, TeamsApiError, type ChatSummary, type ChannelSummary } from "./teams-client.js";
 import { parseStrictYaml } from "./yaml.js";
 
 const DEFAULT_PORT_START = 58_326;
@@ -241,6 +241,65 @@ async function discoverResources(
   }
 }
 
+function storedPersonIds(policies: EditorPolicy[]): string[] {
+  const ids = new Set<string>();
+  for (const record of policies) {
+    if (!record.policy) continue;
+    for (const map of [record.policy.allow?.people, record.policy.deny?.people]) {
+      for (const id of Object.keys(map ?? {})) if (id !== "*") ids.add(id);
+    }
+  }
+  return [...ids];
+}
+
+function personLookupIdentifier(id: string): string {
+  const legacy = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})@[0-9a-f-]{36}$/i.exec(id);
+  return legacy?.[1] ?? id;
+}
+
+async function resolveStoredPeople(
+  paths: StoragePaths,
+  context: RuntimeContext,
+  policies: EditorPolicy[],
+  resources: Resource[],
+  cache: Map<string, Resource>,
+): Promise<Resource[]> {
+  if (!context.tenantId || !context.userId) return [];
+  const known = (id: string): boolean => resources.some((resource) =>
+    resource.kind === "person" && (resource.id === id || resource.participantIds?.includes(id)));
+  const unresolved = storedPersonIds(policies).filter((id) => !known(id) && !cache.has(id));
+  if (unresolved.length) {
+    try {
+      await withDataSession(
+        paths,
+        { tenantId: context.tenantId, userId: context.userId },
+        context.browser,
+        "access",
+        async (session) => {
+          for (const id of unresolved) {
+            try {
+              const { person } = await getPerson(session, personLookupIdentifier(id));
+              cache.set(id, {
+                kind: "person",
+                category: "person",
+                id,
+                label: person.displayName ?? person.email ?? id,
+                detail: person.email ?? person.userPrincipalName ?? "Teams directory user",
+                participantIds: [person.id, person.mri].filter((value): value is string => Boolean(value)),
+              });
+            } catch (error) {
+              if (error instanceof TeamsApiError && (error.status === 401 || error.status === 403)) throw error;
+            }
+          }
+        },
+      );
+    } catch {
+      // Directory enrichment is best effort; unresolved identifiers remain visible and editable.
+    }
+  }
+  return storedPersonIds(policies).flatMap((id) => cache.has(id) ? [cache.get(id) as Resource] : []);
+}
+
 async function readBody(request: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   let length = 0;
@@ -363,6 +422,7 @@ export async function startPolicyEditor(options: PolicyEditorOptions): Promise<P
   let finish: ((reason: PolicyEditorResult["reason"]) => void) | undefined;
   let port = 0;
   let resourcesPromise = discoverResources(options.paths, options.context, subjectPath);
+  const storedPeopleCache = new Map<string, Resource>();
   let restart = "";
 
   const authenticated = (request: IncomingMessage): boolean => sameSecret(cookies(request).teams_cli_editor ?? "", sessionId);
@@ -416,6 +476,7 @@ export async function startPolicyEditor(options: PolicyEditorOptions): Promise<P
         if (!authenticated(request)) throw new HttpError(401, "Editor session is not authenticated");
         const policies = await inspectPolicyStore(options.paths, subjectPath);
         const discovered = await resourcesPromise;
+        const storedPeople = await resolveStoredPeople(options.paths, options.context, policies, discovered.resources, storedPeopleCache);
         const active = policies.filter((record) => record.applies && record.policy?.active);
         const profiles = await loadProfiles(options.paths);
         const identities = Object.entries(profiles.profiles).flatMap(([profileName, profile]) =>
@@ -435,7 +496,7 @@ export async function startPolicyEditor(options: PolicyEditorOptions): Promise<P
           context: { profileName: options.context.profileName, tenantId: options.context.tenantId, userId: options.context.userId, username: options.context.username, browser: options.context.browser },
           policies,
           identities,
-          resources: discovered.resources,
+          resources: [...discovered.resources, ...storedPeople],
           issues,
           requestedName: options.requestedName,
           binding: `${bindAddress}:${port}`,
@@ -461,6 +522,7 @@ export async function startPolicyEditor(options: PolicyEditorOptions): Promise<P
           people: result.people.map((person) => ({
             id: person.id,
             mri: person.mri,
+            aliases: person.aliases,
             displayName: person.displayName,
             email: person.email,
             jobTitle: person.jobTitle,
