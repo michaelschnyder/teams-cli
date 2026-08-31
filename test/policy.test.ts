@@ -27,7 +27,7 @@ function policy(name: string, active = true): Policy {
     name,
     active,
     subject: { paths: ["/workspace", "/projects/*"] },
-    identity,
+    identity: { allowed: [identity] },
     allow: {
       chats: { "chat-1": ["read", "post"] },
       channels: { "channel-1": ["read", "post"] },
@@ -66,13 +66,54 @@ test("keeps read and post permissions independent", () => {
   assert.throws(() => requireMessageSend(resolved(readOnly), identity, { kind: "chat", id: "chat-1" }), /post messages/);
 });
 
+test("allows any whitelisted identity and rejects identities outside the whitelist", () => {
+  const allowed = parsePolicy({
+    version: 1,
+    name: "identity-whitelist",
+    active: true,
+    subject: { paths: ["/workspace"] },
+    identity: { allowed: [identity, { tenantId: "tenant", userId: "other-user" }] },
+    allow: { chats: { "chat-1": ["read"] } },
+  });
+  assert.deepEqual(requireMessageRead(resolved(allowed), { tenantId: "tenant", userId: "other-user" }, { kind: "chat", id: "chat-1" }), []);
+  assert.throws(
+    () => requireMessageRead(resolved(allowed), { tenantId: "tenant", userId: "outsider" }, { kind: "chat", id: "chat-1" }),
+    /identity tenant\/outsider is not allowed/,
+  );
+});
+
+test("keeps people defaults separate from group-chat defaults", () => {
+  const separated = parsePolicy({
+    version: 1,
+    name: "entity-defaults",
+    active: true,
+    subject: { paths: ["/workspace"] },
+    identity: { allowed: [identity] },
+    allow: { people: { "*": ["read"], "person-post": ["post"] }, chats: { "*": ["post"] } },
+    deny: { people: { "person-denied": ["read"] } },
+  });
+  assert.deepEqual(requireMessageRead(resolved(separated), identity, { kind: "chat", id: "one-to-one", category: "person", personIds: ["person-other"] }), []);
+  assert.deepEqual(requireMessageSend(resolved(separated), identity, { kind: "chat", id: "one-to-one", category: "person", personIds: ["person-post"] }), []);
+  assert.throws(() => requireMessageRead(resolved(separated), identity, { kind: "chat", id: "one-to-one", category: "person", personIds: ["person-denied"] }), /not allowed/);
+  assert.deepEqual(requireMessageSend(resolved(separated), identity, { kind: "chat", id: "group", category: "group" }), []);
+  assert.throws(() => requireMessageRead(resolved(separated), identity, { kind: "chat", id: "group", category: "group" }), /not allowed/);
+  assert.deepEqual(
+    requireMessageRead(resolved(separated), identity, { kind: "chat", id: "19:user_person-other@unq.gbl.spaces" }),
+    [],
+  );
+  assert.throws(
+    () => requireMessageRead(resolved(separated), identity, { kind: "chat", id: "19:user_person-denied@unq.gbl.spaces" }),
+    /not allowed/,
+  );
+});
+
 test("supports broad grants while exact denials always win", () => {
   const broad = parsePolicy({
     version: 1,
     name: "broad-with-exception",
     active: true,
     subject: { paths: ["/workspace"] },
-    identity,
+    identity: { allowed: [identity] },
     allow: {
       chats: { "*": ["read", "post"] },
       channels: { "*": ["read"] },
@@ -132,6 +173,13 @@ test("rejects policy fields beyond the versioned schema", () => {
 });
 
 test("rejects the previous messageSend schema and invalid actions", () => {
+  assert.throws(() => parsePolicy({
+    version: 1,
+    name: "legacy-identity",
+    active: false,
+    subject: { paths: ["/workspace"] },
+    identity,
+  }), /unknown field tenantId/);
   assert.throws(() => parsePolicy({
     version: 1,
     name: "legacy",

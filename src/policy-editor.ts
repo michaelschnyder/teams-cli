@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync } from "node:fs";
-import { access, chmod, mkdir, readFile, readdir, rename, stat, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { dirname, join, matchesGlob } from "node:path";
@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import { WebSocketServer, type WebSocket } from "ws";
 import { stringify } from "yaml";
 import { withDataSession } from "./data.js";
-import type { RuntimeContext } from "./config.js";
+import { loadProfiles, type RuntimeContext } from "./config.js";
 import {
   canonicalSubjectPath,
   parsePolicy,
@@ -36,6 +36,7 @@ export type EditorPolicy = {
   policy?: Policy;
   error?: string;
   applies: boolean;
+  matchingPaths?: string[];
   locked: boolean;
   lockReason?: string;
   warnings?: string[];
@@ -64,12 +65,13 @@ export type PolicyEditorResult = {
 };
 
 type Resource = {
-  kind: "chat" | "channel";
+  kind: "person" | "chat" | "channel";
   category: "person" | "group" | "channel";
   id: string;
   label: string;
   detail: string;
   participantIds?: string[];
+  chatId?: string;
   hidden?: boolean;
   disabled?: boolean;
 };
@@ -110,7 +112,11 @@ async function writable(file: string): Promise<boolean> {
 }
 
 function applies(policy: Policy, subjectPath: string): boolean {
-  return policy.subject.paths.some((pattern) => {
+  return matchingPaths(policy, subjectPath).length > 0;
+}
+
+function matchingPaths(policy: Policy, subjectPath: string): string[] {
+  return policy.subject.paths.filter((pattern) => {
     try {
       return matchesGlob(subjectPath, pattern);
     } catch {
@@ -155,6 +161,7 @@ export async function inspectPolicyStore(
         hash: hash(raw),
         policy,
         applies: applies(policy, subjectPath),
+        matchingPaths: matchingPaths(policy, subjectPath),
         locked,
         ...(locked ? { lockReason: policy.active ? "Active policy: direct saves are blocked; edit and export instead" : "Policy file is not writable; edit and export instead" } : {}),
         ...(warnings.length ? { warnings } : {}),
@@ -185,13 +192,16 @@ function chatResource(chat: ChatSummary, currentUserId: string): Resource {
   const label = chat.oneOnOne && people.length === 1 ? people[0] as string : fallback;
   const detailParts = chat.oneOnOne ? [] : people;
   if (omitted > 0) detailParts.push(`+${omitted} participant${omitted === 1 ? "" : "s"} not returned`);
+  const participantIds = participants.flatMap((participant) => [participant.objectId, participant.id].filter((value): value is string => Boolean(value)));
+  const personId = participantIds[0];
   return {
-    kind: "chat",
+    kind: chat.oneOnOne && personId ? "person" : "chat",
     category: chat.oneOnOne ? "person" : "group",
-    id: chat.id,
+    id: chat.oneOnOne && personId ? personId : chat.id,
     label,
     detail: detailParts.join(", ") || (chat.oneOnOne ? "One-to-one chat" : "Participants unavailable"),
-    participantIds: participants.flatMap((participant) => [participant.id, participant.objectId].filter((value): value is string => Boolean(value))),
+    participantIds,
+    ...(chat.oneOnOne ? { chatId: chat.id } : {}),
     hidden: chat.hidden,
     disabled: chat.disabled,
   };
@@ -286,13 +296,14 @@ function html(nonce: string, reconnectCommand: string): string {
   const reconnectJson = JSON.stringify(reconnectCommand).replaceAll("<", "\\u003c");
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Teams CLI policy editor</title>
+<title>Teams CLI Policy Editor</title>
 <style nonce="${nonce}">
-:root{color-scheme:light;font:14px/1.45 system-ui,sans-serif;--bg:#f5f7fb;--panel:#fff;--text:#172033;--muted:#647089;--line:#dbe1ec;--accent:#5666d8;--danger:#b42318;--ok:#16794b;--post:#a44b13}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text)}header{padding:13px 18px;background:#252b4a;color:#fff;display:flex;gap:14px;align-items:center;position:sticky;top:0;z-index:10}header h1{font-size:17px;margin:0;white-space:nowrap}.meta{font-size:12px;opacity:.82;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.status{margin-left:auto;white-space:nowrap}.top-close{background:transparent;color:#fff;border-color:#7780a9}.layout{display:grid;grid-template-columns:240px 1fr;min-height:calc(100vh - 60px)}nav{padding:14px;border-right:1px solid var(--line);background:var(--panel)}nav button{width:100%;text-align:left;margin:3px 0}.content{padding:20px;min-width:0;max-width:1050px}.card{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:17px;margin-bottom:14px}.card h3{margin:0 0 5px}.card h4{margin:0 0 5px}.section-lead{color:var(--muted);margin:0 0 14px}.guardrail-section{border-top:1px solid var(--line);padding-top:15px;margin-top:15px}.guardrail-section:first-of-type{border-top:0;padding-top:0}.banner{padding:10px 14px;border-radius:8px;margin:10px 0;background:#fff4ce;color:#5c4300}.banner.error{background:#fee4e2;color:var(--danger)}.banner.ok{background:#dff6e9;color:var(--ok)}button{border:1px solid var(--line);border-radius:7px;background:var(--panel);color:inherit;padding:8px 11px;cursor:pointer}button.primary,summary.primary,.allow-result{background:var(--accent);color:#fff;border-color:var(--accent)}button.danger,.deny-result{color:var(--danger)}button:disabled{opacity:.5;cursor:not-allowed}input[type=text],textarea{width:100%;padding:9px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:inherit}select{padding:8px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:inherit}.read-access{border-color:#8390d9;background:#f0f2ff}.post-access{border-color:#d79a70;background:#fff2e8;color:#74330d}label{display:block;font-weight:600;margin:10px 0 5px}.field-title{display:flex;align-items:center;gap:7px}.help{border:0;padding:0;background:transparent;color:var(--muted);cursor:help;font-size:15px}.identity-card{display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:start;background:#f4f5f8;border:1px solid var(--line);border-radius:8px;padding:12px;color:#343c50}.identity-card .icon{font-size:20px}.token-row{display:grid;grid-template-columns:auto 1fr;gap:10px;align-items:start;padding:4px 0}.token-row input{margin-top:4px}.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px;align-items:start}.save-menu{position:relative}.save-menu summary{list-style:none;border:1px solid var(--accent);border-radius:7px;padding:8px 12px;cursor:pointer}.save-menu summary::-webkit-details-marker{display:none}.save-options{position:absolute;right:0;top:42px;z-index:5;min-width:220px;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px #18213a26;padding:6px}.save-options button{display:block;width:100%;text-align:left;border:0}.resource{display:grid;grid-template-columns:minmax(0,1fr) 86px 86px;gap:12px;align-items:center;border-top:1px solid var(--line);padding:11px 0}.resource small,.muted{color:var(--muted)}.resource code{font-size:11px}.default-deny{background:#f4f5f8;border-radius:7px;padding:9px 11px;font-weight:600;margin:9px 0}.broad-rules{display:grid;gap:7px;margin:10px 0}.broad-rule{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:14px;align-items:center;border:1px solid var(--line);border-radius:8px;padding:10px}.broad-rule label{margin:0;font-weight:500}.post-label{color:var(--post)}.bucket{display:grid;gap:6px;margin-top:10px}.bucket-resource{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:10px;align-items:center;border:1px solid var(--line);border-left:4px solid var(--accent);border-radius:8px;padding:10px}.bucket-resource.deny{border-left-color:var(--danger);background:#fff9f8}.kind-badge{display:inline-block;background:#edf0f7;color:#434d66;border-radius:10px;padding:2px 7px;font-size:11px}.suggestions{border:1px solid var(--line);border-radius:8px;margin-top:6px;background:var(--panel);box-shadow:0 8px 24px #18213a18}.suggestion{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:10px 12px;border-top:1px solid var(--line)}.suggestion:first-child{border-top:0}.suggestion small{color:var(--muted)}.suggestion-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.directory-only{background:#fafbfc}.badge{display:inline-block;padding:2px 7px;border-radius:10px;background:#e8ebf8;color:#38439b;font-size:11px;margin-left:5px}.badge.active{background:#dff6e9;color:var(--ok)}.badge.error{background:#fee4e2;color:var(--danger)}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#101526;color:#e8ecf5;padding:12px;border-radius:7px}.hidden{display:none}@media(max-width:720px){header{flex-wrap:wrap}.meta{order:3;width:100%}.layout{grid-template-columns:1fr}nav{border-right:0;border-bottom:1px solid var(--line);display:flex;overflow:auto;gap:5px}nav button{width:auto;white-space:nowrap}.content{padding:12px}.resource{grid-template-columns:minmax(0,1fr) 42px 42px}.broad-rule,.bucket-resource{grid-template-columns:1fr}.suggestion{align-items:flex-start;flex-direction:column}.status{margin-left:auto}}
+:root{color-scheme:light dark;font:14px/1.45 system-ui,sans-serif;--bg:light-dark(#f7f8fb,#161922);--panel:light-dark(#fff,#20252f);--subtle:light-dark(#f0f2f7,#1c202a);--text:light-dark(#172033,#edf0f8);--muted:light-dark(#657087,#a9b1c3);--line:light-dark(#d9dee7,#343947);--accent:light-dark(#4356b8,#6475dc);--danger:light-dark(#a42b25,#ffaaa6);--ok:light-dark(#216a42,#9ae4b8)}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text)}header{display:flex;align-items:center;gap:12px;padding:12px 16px;background:#252b4a;color:#fff;position:sticky;top:0;z-index:10}header h1{font-size:16px;margin:0 auto 0 0}button,input,select,textarea{font:inherit;font-size:13px}button{border:1px solid var(--line);border-radius:7px;padding:7px 11px;background:var(--panel);color:inherit;cursor:pointer}button:hover{border-color:var(--accent)}button:disabled{opacity:.42;cursor:not-allowed}.primary{background:var(--accent);border-color:transparent;color:#fff}.top-close{background:transparent;color:#fff;border-color:#7780a9}.status{white-space:nowrap}.offline,.banner{padding:10px 14px;margin:10px 20px;border-radius:8px;background:light-dark(#fff4ce,#4a3b17);color:light-dark(#5c4300,#ffe49a)}.banner.error,.offline{background:light-dark(#fee4e2,#4b2020);color:var(--danger)}.hidden{display:none!important}.policies{padding:14px 20px;border-bottom:1px solid var(--line);background:var(--subtle)}.policy-head{display:flex;align-items:center;gap:12px;margin-bottom:8px}.policy-head h2{font-size:16px;margin:0}.policy-actions{display:flex;align-items:center;gap:10px;margin-left:auto}.show-all{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:13px}.table-wrap{overflow-x:auto}table{width:100%;min-width:560px;border-collapse:collapse}th,td{padding:8px;text-align:left;border-bottom:1px solid var(--line);font-size:13px}th{color:var(--muted);font-size:12px}.policy-table{min-width:760px;border-top:1px solid var(--line)}.policy-table tbody tr{cursor:pointer}.policy-table tr[aria-current=true]{background:light-dark(#e7eaf6,#292f43);box-shadow:inset 3px 0 var(--accent)}.policy-name{font-weight:600}.badge{display:inline-flex;padding:2px 7px;border-radius:999px;font-size:11px;background:light-dark(#e5e9fb,#353d67);color:light-dark(#354b9a,#c9d1ff)}.badge.active{background:light-dark(#dcefe5,#204733);color:var(--ok)}.badge.error{background:light-dark(#fee4e2,#4b2020);color:var(--danger)}.file{display:flex;align-items:center;gap:7px;white-space:nowrap}.file button{padding:3px 7px;border:0;background:transparent;color:var(--accent)}main{padding:0 20px 20px;max-width:1100px}.section{padding:17px 0;border-bottom:1px solid var(--line)}.section h3{font-size:16px;margin:0 0 4px}.section-lead{color:var(--muted);margin:0 0 12px}.tabs{display:flex;gap:4px;margin-top:14px;border-bottom:1px solid var(--line)}.tabs button{border-radius:7px 7px 0 0;border-bottom:0}.tabs button[aria-selected=true]{background:var(--accent);color:#fff;border-color:transparent}.search{margin:12px 0}.search input,input[type=text],textarea,select{width:100%;min-width:0;padding:8px 10px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:inherit}.suggestions{border:1px solid var(--line);border-radius:8px;margin-top:6px;background:var(--panel)}.suggestion{display:flex;align-items:center;gap:10px;padding:9px 10px;border-top:1px solid var(--line)}.suggestion:first-child{border-top:0}.suggestion span{margin-right:auto}.detail{display:block;margin-top:2px;color:var(--muted);font-size:12px;font-weight:400}.access{min-width:92px}.default-row td{background:var(--subtle);border-top:1px solid var(--line)}.identity-picker{width:100%}.paths{width:100%;min-height:calc(3 * 1.4em + 18px);max-height:calc(6 * 1.4em + 18px);line-height:1.4;resize:vertical}.token{display:flex;align-items:flex-start;gap:9px}.token input{margin-top:4px}.footer{display:flex;align-items:center;gap:9px;padding-top:16px}.footer .dirty{margin-right:auto;color:var(--muted);font-size:13px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#101526;color:#e8ecf5;padding:12px;border-radius:7px}@media(max-width:650px){header,.policy-head,.policy-actions,.footer{align-items:flex-start;flex-wrap:wrap}.policy-actions{margin-left:0}main{padding:0 12px 12px}.status{margin-left:auto}}
 </style></head><body>
-<header><h1>Teams CLI policy editor</h1><div id="headerMeta" class="meta">Connecting…</div><div id="connection" class="status">● connecting</div><button id="closeEditor" class="top-close">Close</button></header>
-<div id="offline" class="banner error hidden">Editing has ended because the CLI server disconnected. Start it again with: <code>${escapedCommand}</code></div>
-<div class="layout"><nav id="tabs"></nav><main id="content" class="content"><div class="card">Loading policy context…</div></main></div>
+<header><h1 id="editorTitle">Policy Editor</h1><div id="connection" class="status">● connecting</div><button id="closeEditor" class="top-close">Close without saving</button></header>
+<div id="offline" class="offline hidden">Editing has ended because the CLI server disconnected. Start it again with: <code>${escapedCommand}</code></div>
+<section id="policySection" class="policies"><div class="policy-head"><h2>Workspace policies</h2><div class="policy-actions"><label id="showAllLabel" class="show-all"><input id="showAll" type="checkbox"> Show all policies on this system</label><button id="newPolicy" type="button">New policy</button></div></div><div id="policyTableWrap" class="table-wrap"><table class="policy-table"><thead><tr><th>Policy name</th><th>Status</th><th>Matching path</th><th>File</th><th></th></tr></thead><tbody id="policyRows"></tbody></table></div></section>
+<main><div id="message"></div><div id="content">Loading policy context…</div></main>
 <script type="module" nonce="${nonce}">
 const reconnectCommand=${reconnectJson};
 ${CLIENT_SCRIPT}
@@ -406,6 +417,11 @@ export async function startPolicyEditor(options: PolicyEditorOptions): Promise<P
         const policies = await inspectPolicyStore(options.paths, subjectPath);
         const discovered = await resourcesPromise;
         const active = policies.filter((record) => record.applies && record.policy?.active);
+        const profiles = await loadProfiles(options.paths);
+        const identities = Object.entries(profiles.profiles).flatMap(([profileName, profile]) =>
+          profile.tenantId && profile.userId
+            ? [{ profileName, tenantId: profile.tenantId, userId: profile.userId, label: profile.username ?? profileName }]
+            : []);
         const issues = [
           ...(active.length === 0 ? ["No active policy applies to this workspace"] : []),
           ...policies.filter((record) => record.error).map((record) => `${record.name}: ${record.error}`),
@@ -418,6 +434,7 @@ export async function startPolicyEditor(options: PolicyEditorOptions): Promise<P
           subjectPath,
           context: { profileName: options.context.profileName, tenantId: options.context.tenantId, userId: options.context.userId, username: options.context.username, browser: options.context.browser },
           policies,
+          identities,
           resources: discovered.resources,
           issues,
           requestedName: options.requestedName,
@@ -439,7 +456,7 @@ export async function startPolicyEditor(options: PolicyEditorOptions): Promise<P
           "search",
           (session) => searchPeople(session, query),
         );
-        const directChats = discovered.resources.filter((resource) => resource.category === "person");
+        const directChats = discovered.resources.filter((resource) => resource.kind === "person");
         json(response, 200, {
           people: result.people.map((person) => ({
             id: person.id,
@@ -447,7 +464,7 @@ export async function startPolicyEditor(options: PolicyEditorOptions): Promise<P
             displayName: person.displayName,
             email: person.email,
             jobTitle: person.jobTitle,
-            chatId: directChats.find((resource) => resource.participantIds?.some((id) => id === person.id || id === person.mri))?.id ?? null,
+            chatId: directChats.find((resource) => resource.participantIds?.some((id) => id === person.id || id === person.mri))?.chatId ?? null,
           })),
         });
         return;
@@ -468,9 +485,6 @@ export async function startPolicyEditor(options: PolicyEditorOptions): Promise<P
         const records = await inspectPolicyStore(options.paths, subjectPath);
         const existing = records.find((record) => record.name === body.originalName);
         if (!existing?.policy) throw new HttpError(404, `Policy ${body.originalName} does not exist or is invalid`);
-        if (JSON.stringify(existing.policy.identity ?? {}) !== JSON.stringify(policy.identity ?? {})) {
-          throw new HttpError(400, "The policy identity cannot be changed in the editor");
-        }
         const file = policyFile(options.paths, policy.name);
         const yaml = stringify(policy);
         json(response, 200, { yaml, command: policyReplacementCommand(file, yaml), file });
@@ -489,15 +503,6 @@ export async function startPolicyEditor(options: PolicyEditorOptions): Promise<P
         if (existing?.locked) throw new HttpError(409, existing.lockReason ?? "Policy is locked");
         if (!existing && records.some((record) => record.name === policy.name)) throw new HttpError(409, `Policy ${policy.name} already exists`);
         if (existing && body.expectedHash !== existing.hash) throw new HttpError(409, "Policy changed outside the editor; reload before saving");
-        if (existing?.policy && JSON.stringify(existing.policy.identity ?? {}) !== JSON.stringify(policy.identity ?? {})) {
-          throw new HttpError(400, "The policy identity cannot be changed in the editor");
-        }
-        if (!existing) {
-          if (!options.context.tenantId || !options.context.userId) throw new HttpError(400, "Select a tenant and user before creating a policy");
-          if (policy.identity?.tenantId !== options.context.tenantId || policy.identity?.userId !== options.context.userId) {
-            throw new HttpError(400, "New policies must use the selected tenant and user");
-          }
-        }
         const file = policyFile(options.paths, policy.name);
         const yaml = stringify(policy);
         try {
@@ -515,6 +520,20 @@ export async function startPolicyEditor(options: PolicyEditorOptions): Promise<P
         }
         json(response, 200, { policy, file, protection: process.platform === "win32" ? "Apply an administrator-managed read-only ACL" : `chmod 400 -- ${shellQuote(file)}` });
         if (body.mode === "activate") setTimeout(() => finish?.("activated"), 50);
+        return;
+      }
+      if (request.method === "POST" && url.pathname === "/api/delete") {
+        requireMutation(request);
+        const body = object(await readBody(request), "Delete request");
+        if (typeof body.name !== "string") throw new HttpError(400, "Policy name is required");
+        const records = await inspectPolicyStore(options.paths, subjectPath);
+        const existing = records.find((record) => record.name === body.name);
+        if (!existing) throw new HttpError(404, `Policy ${body.name} does not exist`);
+        if (existing.policy?.active) throw new HttpError(409, "Active policies cannot be deleted");
+        if (existing.locked) throw new HttpError(409, existing.lockReason ?? "Policy is locked");
+        if (body.expectedHash !== existing.hash) throw new HttpError(409, "Policy changed outside the editor; reload before deleting");
+        await unlink(existing.file);
+        json(response, 200, { deleted: true });
         return;
       }
       if (request.method === "POST" && url.pathname === "/api/done") {

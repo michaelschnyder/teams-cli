@@ -181,7 +181,7 @@ async function configureActivePolicy(
     name: "e2e",
     active: false,
     subject: { paths: [repository] },
-    identity,
+    identity: { allowed: [identity] },
     allow: {
       chats: {},
       channels: { [allowedChannelId]: ["read", "post"] },

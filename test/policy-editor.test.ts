@@ -43,16 +43,17 @@ test("secures the editor session and atomically saves a draft", async () => {
     assert.match(page.headers.get("content-security-policy") ?? "", /default-src 'none'/);
     const pageHtml = await page.text();
     assert.match(pageHtml, /<script type="module" nonce=/);
-    assert.match(pageHtml, /Governed paths/);
-    assert.match(pageHtml, /This is enforced, not selected here/);
-    assert.match(pageHtml, /Save without activating/);
-    assert.match(pageHtml, /group chats/);
-    assert.match(pageHtml, /Allowed destinations/);
-    assert.match(pageHtml, /Denied destinations/);
-    assert.match(pageHtml, /Default: deny every unlisted destination/);
-    assert.match(pageHtml, /Post to all/);
-    assert.match(pageHtml, /class="allow-result"/);
+    assert.match(pageHtml, /Policy Editor for workspace/);
+    assert.match(pageHtml, /Workspace policies/);
+    assert.match(pageHtml, /Allowed identities/);
+    assert.match(pageHtml, /Select another identity/);
+    assert.match(pageHtml, /Group chats/);
+    assert.match(pageHtml, /For anyone not in the list, or when set to default/);
+    assert.match(pageHtml, /Save and activate/);
+    assert.match(pageHtml, /Close without saving/);
+    assert.match(pageHtml, /data-copy-path/);
     assert.match(pageHtml, /\/api\/people\?q=/);
+    assert.match(pageHtml, /\/api\/delete/);
     assert.match(pageHtml, /id="closeEditor"/);
     assert.doesNotMatch(pageHtml, /skypetoken|accessToken/);
 
@@ -85,8 +86,8 @@ test("secures the editor session and atomically saves a draft", async () => {
       name: "editor-draft",
       active: false,
       subject: { paths: [subject, join(subject, "**")] },
-      identity: { tenantId: "tenant", userId: "user" },
-      allow: { chats: { "chat-1": ["read"] }, channels: { "channel-1": ["post"] }, rawTokenExport: false },
+      identity: { allowed: [{ tenantId: "tenant", userId: "user" }] },
+      allow: { people: { "person-1": ["read"] }, chats: { "chat-1": ["read"] }, channels: { "channel-1": ["post"] }, rawTokenExport: false },
     };
     const saved = await fetch(`${origin}/api/save`, {
       method: "POST",
@@ -103,6 +104,24 @@ test("secures the editor session and atomically saves a draft", async () => {
       body: JSON.stringify({ policy, originalName: "editor-draft", expectedHash: "stale", mode: "draft" }),
     });
     assert.equal(conflict.status, 409);
+
+    const deletePolicy = { ...policy, name: "delete-me" };
+    const deleteSaved = await fetch(`${origin}/api/save`, {
+      method: "POST",
+      headers: { origin, cookie, "x-csrf-token": csrf, "content-type": "application/json" },
+      body: JSON.stringify({ policy: deletePolicy, originalName: null, expectedHash: null, mode: "draft" }),
+    });
+    assert.equal(deleteSaved.status, 200, await deleteSaved.text());
+    const stateBeforeDelete = await fetch(`${origin}/api/state`, { headers: { cookie } });
+    const deleteRecord = ((await stateBeforeDelete.json()) as { policies: Array<{ name: string; hash: string }> }).policies.find((record) => record.name === "delete-me");
+    assert.ok(deleteRecord);
+    const deleted = await fetch(`${origin}/api/delete`, {
+      method: "POST",
+      headers: { origin, cookie, "x-csrf-token": csrf, "content-type": "application/json" },
+      body: JSON.stringify({ name: "delete-me", expectedHash: deleteRecord.hash }),
+    });
+    assert.equal(deleted.status, 200, await deleted.text());
+    assert.equal((await inspectPolicyStore(paths, subject)).some((record) => record.name === "delete-me"), false);
 
     const missingCsrf = await fetch(`${origin}/api/done`, {
       method: "POST",
@@ -156,6 +175,12 @@ test("secures the editor session and atomically saves a draft", async () => {
       body: JSON.stringify({ policy: revised, originalName: "editor-draft", expectedHash: lockedRecord?.hash, mode: "draft" }),
     });
     assert.equal(blockedSave.status, 409);
+    const blockedDelete = await fetch(`${exportOrigin}/api/delete`, {
+      method: "POST",
+      headers: { origin: exportOrigin, cookie: exportCookie, "x-csrf-token": exportCsrf, "content-type": "application/json" },
+      body: JSON.stringify({ name: "editor-draft", expectedHash: lockedRecord?.hash }),
+    });
+    assert.equal(blockedDelete.status, 409);
     const exported = await fetch(`${exportOrigin}/api/export`, {
       method: "POST",
       headers: { origin: exportOrigin, cookie: exportCookie, "x-csrf-token": exportCsrf, "content-type": "application/json" },

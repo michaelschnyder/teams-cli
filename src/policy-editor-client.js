@@ -1,9 +1,15 @@
 let state = null;
-let selected = "effective";
+let selected = null;
+let selectedRecord = null;
+let draft = null;
+let entity = "people";
+let showAll = false;
+let dirty = false;
 let csrf = "";
 let socket = null;
-let dirty = false;
-let initialSignature = "";
+let searchTimer = null;
+let searchSequence = 0;
+const addedResources = new Map();
 
 const esc = (value) => String(value ?? "").replace(/[&<>\"]/g, (character) => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;",
@@ -17,23 +23,330 @@ async function api(path, options = {}) {
   return data;
 }
 
-async function claim() {
-  const token = location.pathname.startsWith("/claim/") ? decodeURIComponent(location.pathname.slice(7)) : "";
-  if (token) {
-    const result = await api("/api/claim", { method: "POST", body: JSON.stringify({ token }) });
-    csrf = result.csrf;
-    history.replaceState({}, "", "/");
-  } else csrf = (await api("/api/session")).csrf;
-  await load();
-  connect();
-  document.getElementById("closeEditor").onclick = closeEditor;
+async function copy(text, button) {
+  await navigator.clipboard.writeText(text).catch(() => prompt("Copy this text", text));
+  if (!button) return;
+  const label = button.textContent;
+  button.textContent = "Copied";
+  setTimeout(() => { button.textContent = label; }, 1_200);
+}
+
+function blankPolicy() {
+  const identity = state.context.tenantId && state.context.userId
+    ? { allowed: [{ tenantId: state.context.tenantId, userId: state.context.userId }] }
+    : undefined;
+  return {
+    version: 1,
+    name: "workspace-policy",
+    active: false,
+    subject: { paths: [state.subjectPath, `${state.subjectPath}/**`] },
+    ...(identity ? { identity } : {}),
+    allow: { people: {}, chats: {}, channels: {}, rawTokenExport: false },
+    deny: { people: {}, chats: {}, channels: {} },
+  };
+}
+
+function normalizePolicy(policy) {
+  const value = structuredClone(policy);
+  value.allow ||= {};
+  value.allow.people ||= {};
+  value.allow.chats ||= {};
+  value.allow.channels ||= {};
+  value.deny ||= {};
+  value.deny.people ||= {};
+  value.deny.chats ||= {};
+  value.deny.channels ||= {};
+  value.identity ||= { allowed: [] };
+  value.identity.allowed ||= [];
+  return value;
+}
+
+function applicablePolicies() {
+  return state.policies.filter((record) => record.applies);
+}
+
+function shownPolicies() {
+  const records = showAll ? [...state.policies] : applicablePolicies();
+  if (selectedRecord && !records.includes(selectedRecord)) records.push(selectedRecord);
+  return records.sort((a, b) => Number(Boolean(b.applies)) - Number(Boolean(a.applies)) || a.name.localeCompare(b.name));
+}
+
+function choose(record, fresh = false) {
+  if (!fresh && dirty && !confirm("Discard the unsaved changes on this policy?")) return false;
+  selectedRecord = record;
+  selected = record ? record.name : "__new__";
+  draft = record?.error ? null : normalizePolicy(record?.policy || blankPolicy());
+  dirty = !record;
+  entity = "people";
+  addedResources.clear();
+  render();
+  return true;
+}
+
+function policyStatus(record) {
+  if (record.error) return '<span class="badge error">Invalid</span>';
+  return record.policy?.active ? '<span class="badge active">Active</span>' : "";
+}
+
+function fileCell(record) {
+  const file = record.file;
+  const name = file.split(/[\\/]/).pop();
+  return `<span class="file"><span class="detail" title="${esc(file)}">${esc(name)}</span><button type="button" data-copy-path="${esc(file)}">Copy path</button></span>`;
+}
+
+function renderPolicyTable() {
+  const rows = shownPolicies();
+  const virtualCount = selected === "__new__" ? 1 : 0;
+  const total = state.policies.length + virtualCount;
+  document.getElementById("policyTableWrap").classList.toggle("hidden", total <= 1);
+  document.getElementById("showAllLabel").classList.toggle("hidden", state.policies.length <= 1);
+  const html = rows.map((record) => {
+    const current = selectedRecord === record;
+    const match = record.matchingPaths?.[0] || (record.applies ? record.policy?.subject?.paths?.[0] : "Not applicable");
+    const star = current && dirty ? " *" : "";
+    const lockedDelete = Boolean(record.policy?.active || record.locked);
+    return `<tr data-policy="${esc(record.name)}" aria-current="${current}"><td><span class="policy-name">${esc(record.name + star)}</span></td><td>${policyStatus(record)}</td><td title="${esc((record.matchingPaths || []).join("\n"))}">${esc(match)}</td><td>${fileCell(record)}</td><td><button type="button" data-delete="${esc(record.name)}" ${lockedDelete ? 'disabled title="Active or locked policies cannot be deleted"' : ""}>Delete</button></td></tr>`;
+  }).join("");
+  const newRow = selected === "__new__"
+    ? `<tr data-policy="__new__" aria-current="true"><td><span class="file"><input id="newPolicyName" aria-label="Policy name" type="text" value="${esc(draft.name)}"><span>*</span></span></td><td></td><td>${esc(draft.subject.paths[0] || state.subjectPath)}</td><td><span class="detail">Not saved</span></td><td><button type="button" data-cancel-new>Delete</button></td></tr>`
+    : "";
+  document.getElementById("policyRows").innerHTML = html + newRow;
+  const nameInput = document.getElementById("newPolicyName");
+  if (nameInput) nameInput.oninput = () => { draft.name = nameInput.value.trim(); markDirty(); };
+}
+
+function markDirty() {
+  dirty = true;
+  document.getElementById("dirtyState").textContent = "Unsaved changes";
+  const row = document.querySelector("#policyRows tr[aria-current=true] .policy-name");
+  if (row && !row.textContent.endsWith(" *")) row.textContent += " *";
+}
+
+function mapName(kind) {
+  return kind === "person" ? "people" : kind === "chat" ? "chats" : "channels";
+}
+
+function actionDecision(kind, id, action) {
+  const name = mapName(kind);
+  if (draft.deny[name]?.[id]?.includes(action)) return "deny";
+  if (draft.allow[name]?.[id]?.includes(action)) return "allow";
+  return "default";
+}
+
+function defaultDecision(kind, action) {
+  return draft.allow[mapName(kind)]?.["*"]?.includes(action) ? "allow" : "deny";
+}
+
+function setMapAction(map, id, action, present) {
+  const actions = new Set(map[id] || []);
+  if (present) actions.add(action); else actions.delete(action);
+  if (actions.size) map[id] = [...actions]; else delete map[id];
+}
+
+function setDecision(kind, id, action, value) {
+  const name = mapName(kind);
+  setMapAction(draft.allow[name], id, action, value === "allow");
+  setMapAction(draft.deny[name], id, action, value === "deny");
+  markDirty();
+}
+
+function setDefault(kind, action, value) {
+  setMapAction(draft.allow[mapName(kind)], "*", action, value === "allow");
+  markDirty();
+}
+
+function decisionSelect(value, scope, action, index = "") {
+  const defaultOption = scope === "rule" ? `<option value="default" ${value === "default" ? "selected" : ""}>Default</option>` : "";
+  return `<select class="access" data-${scope}="${esc(action)}" ${scope === "rule" ? `data-index="${esc(index)}"` : ""}>${defaultOption}<option value="allow" ${value === "allow" ? "selected" : ""}>Allow</option><option value="deny" ${value === "deny" ? "selected" : ""}>Deny</option></select>`;
+}
+
+function entityKind() {
+  return entity === "people" ? "person" : entity === "chats" ? "chat" : "channel";
+}
+
+function configuredIds(kind) {
+  const name = mapName(kind);
+  return new Set([...Object.keys(draft.allow[name] || {}), ...Object.keys(draft.deny[name] || {})].filter((id) => id !== "*"));
+}
+
+function ruleResources() {
+  const kind = entityKind();
+  const ids = configuredIds(kind);
+  const result = [];
+  for (const id of ids) {
+    const known = state.resources.find((resource) => resource.kind === kind && resource.id === id) || addedResources.get(`${kind}:${id}`);
+    result.push(known || { kind, id, label: id, detail: "Stored identifier was not returned by Teams" });
+  }
+  for (const resource of addedResources.values()) {
+    if (resource.kind === kind && !ids.has(resource.id)) result.push(resource);
+  }
+  return result;
+}
+
+const defaultText = {
+  people: "For anyone not in the list, or when set to default.",
+  chats: "For chats not in the list, or when set to default.",
+  channels: "For channels not in the list, or when set to default.",
+};
+
+function renderRuleRows() {
+  const kind = entityKind();
+  const resources = ruleResources();
+  const rows = resources.map((resource, index) => `<tr><td>${esc(resource.label)}<span class="detail">${esc(resource.detail || resource.id)}</span></td><td>${decisionSelect(actionDecision(kind, resource.id, "read"), "rule", "read", index)}</td><td>${decisionSelect(actionDecision(kind, resource.id, "post"), "rule", "post", index)}</td><td><button type="button" data-remove-rule="${index}">Remove</button></td></tr>`).join("");
+  const fallback = `<tr class="default-row"><td>Default<span class="detail">${esc(defaultText[entity])}</span></td><td>${decisionSelect(defaultDecision(kind, "read"), "fallback", "read")}</td><td>${decisionSelect(defaultDecision(kind, "post"), "fallback", "post")}</td><td></td></tr>`;
+  document.getElementById("resourceRows").innerHTML = rows + fallback;
+  document.querySelectorAll("[data-rule]").forEach((control) => {
+    control.onchange = () => {
+      const resource = ruleResources()[Number(control.dataset.index)];
+      if (resource) setDecision(kind, resource.id, control.dataset.rule, control.value);
+    };
+  });
+  document.querySelectorAll("[data-fallback]").forEach((control) => {
+    control.onchange = () => setDefault(kind, control.dataset.fallback, control.value);
+  });
+  document.querySelectorAll("[data-remove-rule]").forEach((button) => {
+    button.onclick = () => {
+      const resource = ruleResources()[Number(button.dataset.removeRule)];
+      if (!resource) return;
+      for (const action of ["read", "post"]) setDecision(kind, resource.id, action, "default");
+      addedResources.delete(`${kind}:${resource.id}`);
+      renderRuleRows();
+    };
+  });
+}
+
+function addResource(resource) {
+  addedResources.set(`${resource.kind}:${resource.id}`, resource);
+  setDecision(resource.kind, resource.id, "read", "allow");
+  setDecision(resource.kind, resource.id, "post", "default");
+  document.getElementById("searchResults").classList.add("hidden");
+  document.getElementById("resourceSearch").value = "";
+  renderRuleRows();
+}
+
+function renderSuggestions(resources) {
+  const unique = [...new Map(resources.map((resource) => [`${resource.kind}:${resource.id}`, resource])).values()]
+    .filter((resource) => !configuredIds(resource.kind).has(resource.id));
+  const target = document.getElementById("searchResults");
+  target.innerHTML = unique.map((resource, index) => `<div class="suggestion"><span><strong>${esc(resource.label)}</strong><small class="detail">${esc(resource.detail || resource.id)}</small></span><button type="button" data-add-result="${index}" class="primary">Add</button></div>`).join("");
+  target.classList.toggle("hidden", unique.length === 0);
+  target.querySelectorAll("[data-add-result]").forEach((button) => { button.onclick = () => addResource(unique[Number(button.dataset.addResult)]); });
+}
+
+function searchResources(query) {
+  const kind = entityKind();
+  const local = state.resources.filter((resource) => resource.kind === kind && `${resource.label} ${resource.detail} ${resource.id}`.toLowerCase().includes(query));
+  renderSuggestions(local);
+  if (entity !== "people") return;
+  const sequence = ++searchSequence;
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(async () => {
+    try {
+      const result = await api(`/api/people?q=${encodeURIComponent(query)}`);
+      if (sequence !== searchSequence) return;
+      renderSuggestions(result.people.map((person) => ({ kind: "person", id: person.id, label: person.displayName || person.email || person.id, detail: person.email || person.mri || person.id })));
+    } catch (error) {
+      if (sequence === searchSequence) document.getElementById("message").innerHTML = `<div class="banner error">${esc(error.message)}</div>`;
+    }
+  }, 250);
+}
+
+function knownIdentities() {
+  const values = [...state.identities];
+  if (state.context.tenantId && state.context.userId && !values.some((identity) => identity.tenantId === state.context.tenantId && identity.userId === state.context.userId)) {
+    values.push({ tenantId: state.context.tenantId, userId: state.context.userId, label: state.context.username || state.context.profileName });
+  }
+  return values;
+}
+
+function identityLabel(identity) {
+  return knownIdentities().find((candidate) => candidate.tenantId === identity.tenantId && candidate.userId === identity.userId)?.label || identity.userId;
+}
+
+function renderIdentities() {
+  const allowed = draft.identity?.allowed || [];
+  const rows = allowed.map((identity, index) => `<tr><td>${esc(identityLabel(identity))}<span class="detail">${esc(identity.tenantId)} / ${esc(identity.userId)}</span></td><td><button type="button" data-remove-identity="${index}">Remove</button></td></tr>`).join("");
+  const available = knownIdentities().filter((candidate) => !allowed.some((identity) => identity.tenantId === candidate.tenantId && identity.userId === candidate.userId));
+  const picker = `<tr><td colspan="2"><select id="identityPicker" class="identity-picker"><option value="">Select another identity</option>${available.map((identity, index) => `<option value="${index}">${esc(identity.label)} · ${esc(identity.userId)}</option>`).join("")}</select></td></tr>`;
+  document.getElementById("identityRows").innerHTML = rows + picker;
+  document.querySelectorAll("[data-remove-identity]").forEach((button) => {
+    button.onclick = () => { draft.identity.allowed.splice(Number(button.dataset.removeIdentity), 1); markDirty(); renderIdentities(); };
+  });
+  document.getElementById("identityPicker").onchange = (event) => {
+    if (event.target.value === "") return;
+    const identity = available[Number(event.target.value)];
+    if (identity) draft.identity.allowed.push({ tenantId: identity.tenantId, userId: identity.userId });
+    markDirty();
+    renderIdentities();
+  };
+}
+
+function renderEditor() {
+  if (selectedRecord?.error) {
+    document.getElementById("content").innerHTML = `<div class="section"><h3>${esc(selectedRecord.name)}</h3><div class="banner error">${esc(selectedRecord.error)}</div><pre>${esc(selectedRecord.raw)}</pre><div class="footer"><span class="dirty"></span><button id="copyRaw">Copy YAML</button></div></div>`;
+    document.getElementById("copyRaw").onclick = (event) => copy(selectedRecord.raw, event.currentTarget);
+    return;
+  }
+  const locked = Boolean(selectedRecord?.locked);
+  document.getElementById("content").innerHTML = `${selectedRecord?.lockReason ? `<div class="banner">${esc(selectedRecord.lockReason)}</div>` : ""}
+    <section class="section"><h3>Message destinations</h3><p class="section-lead">Choose the people, group chats, and channels this policy may read from or post to.</p><div class="tabs"><button type="button" data-entity="people" aria-selected="true">People</button><button type="button" data-entity="chats" aria-selected="false">Group chats</button><button type="button" data-entity="channels" aria-selected="false">Channels</button></div><div class="search"><input id="resourceSearch" type="text" autocomplete="off" placeholder="Search people by name or email"><div id="searchResults" class="suggestions hidden"></div></div><div class="table-wrap"><table><thead><tr><th>Destination</th><th>Read</th><th>Post</th><th></th></tr></thead><tbody id="resourceRows"></tbody></table></div></section>
+    <section class="section"><h3>Allowed identities</h3><p class="section-lead">After this policy applies, only identities on this whitelist may be used in the workspace.</p><div class="table-wrap"><table><thead><tr><th>Allowed identity</th><th></th></tr></thead><tbody id="identityRows"></tbody></table></div></section>
+    <section class="section"><h3>Features</h3><label class="token"><input id="rawTokens" type="checkbox" ${draft.allow.rawTokenExport ? "checked" : ""}><span><strong>Allow raw token export</strong><span class="detail">Keep disabled unless an external tool genuinely requires a complete bearer token.</span></span></label></section>
+    <section class="section"><h3>Applicability</h3><p class="section-lead">The matching paths determine whether this policy applies to the current workspace.</p><textarea id="subjects" class="paths" rows="3">${esc(draft.subject.paths.join("\n"))}</textarea></section>
+    <div class="footer"><span id="dirtyState" class="dirty">${dirty ? "Unsaved changes" : "No unsaved changes"}</span><button id="copyYaml">Copy YAML</button>${locked ? '<button id="copyApply">Copy apply command</button>' : '<button id="savePolicy">Save</button><button id="activatePolicy" class="primary">Save and activate</button>'}</div>`;
+  renderRuleRows();
+  renderIdentities();
+  document.querySelectorAll("[data-entity]").forEach((button) => {
+    button.onclick = () => {
+      entity = button.dataset.entity;
+      document.querySelectorAll("[data-entity]").forEach((peer) => peer.setAttribute("aria-selected", String(peer === button)));
+      document.getElementById("resourceSearch").value = "";
+      document.getElementById("resourceSearch").placeholder = entity === "people" ? "Search people by name or email" : entity === "chats" ? "Search group chats or participants" : "Search channels or teams";
+      document.getElementById("searchResults").classList.add("hidden");
+      renderRuleRows();
+    };
+  });
+  document.getElementById("resourceSearch").oninput = (event) => {
+    const query = event.target.value.trim().toLowerCase();
+    if (query.length < 2) { document.getElementById("searchResults").classList.add("hidden"); return; }
+    searchResources(query);
+  };
+  document.getElementById("rawTokens").onchange = (event) => { draft.allow.rawTokenExport = event.target.checked; markDirty(); };
+  document.getElementById("subjects").oninput = (event) => { draft.subject.paths = event.target.value.split("\n").map((value) => value.trim()).filter(Boolean); markDirty(); };
+  document.getElementById("copyYaml").onclick = async (event) => copy((await api("/api/render", { method: "POST", body: JSON.stringify({ policy: draft }) })).yaml, event.currentTarget);
+  if (locked) {
+    document.getElementById("copyApply").onclick = async (event) => copy((await api("/api/export", { method: "POST", body: JSON.stringify({ policy: draft, originalName: selectedRecord.name }) })).command, event.currentTarget);
+  } else {
+    document.getElementById("savePolicy").onclick = () => save("draft");
+    document.getElementById("activatePolicy").onclick = () => save("activate");
+  }
+}
+
+async function save(mode) {
+  if (mode === "activate" && !confirm("Save and activate this policy? Active policies cannot be edited or deleted in place.")) return;
+  try {
+    const result = await api("/api/save", { method: "POST", body: JSON.stringify({ policy: draft, originalName: selectedRecord?.name || null, expectedHash: selectedRecord?.hash || null, mode }) });
+    dirty = false;
+    if (mode === "draft") { selected = result.policy.name; await load(); }
+  } catch (error) {
+    document.getElementById("message").innerHTML = `<div class="banner error">${esc(error.message)}</div>${error.data?.yaml ? '<button id="copyFailed">Copy YAML</button>' : ""}${error.data?.command ? '<button id="copyCommand">Copy replacement command</button>' : ""}`;
+    if (error.data?.yaml) document.getElementById("copyFailed").onclick = (event) => copy(error.data.yaml, event.currentTarget);
+    if (error.data?.command) document.getElementById("copyCommand").onclick = (event) => copy(error.data.command, event.currentTarget);
+  }
+}
+
+function render() {
+  document.getElementById("editorTitle").textContent = `Policy Editor for workspace ${state.subjectPath}`;
+  renderPolicyTable();
+  renderEditor();
 }
 
 async function load() {
   state = await api("/api/state");
-  document.getElementById("headerMeta").textContent = `v${state.version} · ${state.context.profileName} · ${state.invocationDirectory} · ${state.binding}`;
-  if (selected === "effective" && state.requestedName && state.policies.some((policy) => policy.name === state.requestedName)) selected = state.requestedName;
-  dirty = false;
+  const requested = selected && selected !== "__new__" ? state.policies.find((record) => record.name === selected) : state.policies.find((record) => record.name === state.requestedName);
+  const initial = requested || applicablePolicies()[0];
+  if (initial) { selectedRecord = initial; selected = initial.name; draft = initial.error ? null : normalizePolicy(initial.policy); dirty = false; }
+  else { selectedRecord = null; selected = "__new__"; draft = normalizePolicy(blankPolicy()); dirty = true; }
   render();
 }
 
@@ -44,13 +357,12 @@ function connect() {
   socket.onclose = () => {
     document.getElementById("connection").textContent = "● disconnected";
     document.getElementById("offline").classList.remove("hidden");
-    document.querySelectorAll("button,input,textarea,summary").forEach((element) => { element.disabled = true; });
+    document.querySelectorAll("button,input,textarea,select").forEach((element) => { element.disabled = true; });
   };
 }
 
 async function closeEditor() {
-  if (dirty && !confirm("This policy has changes that have not been saved or exported. Close the editor anyway?")) return;
-  document.getElementById("connection").textContent = "Closing…";
+  if (dirty && !confirm("This policy has unsaved changes. Close without saving?")) return;
   await api("/api/done", { method: "POST", body: "{}" });
   window.close();
 }
@@ -61,282 +373,38 @@ window.addEventListener("beforeunload", (event) => {
   event.returnValue = "";
 });
 
-function sortedPolicies() {
-  return [...state.policies].sort((a, b) => Number(Boolean(b.applies && b.policy?.active)) - Number(Boolean(a.applies && a.policy?.active)) || Number(b.applies) - Number(a.applies) || a.name.localeCompare(b.name));
-}
-
-function renderTabs() {
-  const nav = document.getElementById("tabs");
-  nav.innerHTML = '<button data-tab="effective">◉ Effective access</button><button data-tab="new">＋ New policy</button>' + sortedPolicies().map((policy) => `<button data-tab="${esc(policy.name)}">${esc(policy.name)}${policy.policy?.active ? '<span class="badge active">active</span>' : policy.error ? '<span class="badge error">invalid</span>' : policy.applies ? '<span class="badge">applies</span>' : ""}</button>`).join("");
-  nav.querySelectorAll("button").forEach((button) => {
-    button.onclick = () => {
-      if (dirty && !confirm("Discard the unsaved changes on this policy?")) return;
-      selected = button.dataset.tab;
-      dirty = false;
-      render();
-    };
-  });
-}
-
-function resourceIcon(category) {
-  return category === "person" ? "👤" : category === "group" ? "👥" : "#";
-}
-
-function effectiveView() {
-  const active = state.policies.filter((policy) => policy.applies && policy.policy?.active);
-  const unrestricted = active.length === 0;
-  const rows = state.resources.map((resource) => {
-    const read = unrestricted || active.every((stored) => policyPermits(stored.policy, resource, "read"));
-    const post = unrestricted || active.every((stored) => policyPermits(stored.policy, resource, "post"));
-    return `<div class="resource"><div><strong>${resourceIcon(resource.category)} ${esc(resource.label)}</strong><br><small>${esc(resource.detail)} · <code>${esc(resource.id)}</code></small></div><span>${read ? "✓ Read" : "— Read"}</span><span>${post ? "✓ Post" : "— Post"}</span></div>`;
-  }).join("");
-  return `<h2>Effective access</h2><p class="section-lead">The access that remains after every active policy governing this workspace is intersected.</p>${unrestricted ? '<div class="banner error">No active policy applies. Message access is currently unrestricted.</div>' : `<div class="banner ok">Enforced by ${active.map((policy) => esc(policy.name)).join(", ")}</div>`}${state.issues.map((issue) => `<div class="banner error">${esc(issue)}</div>`).join("")}<div class="card"><h3>Destinations</h3><div class="resources">${rows || '<p class="muted">No Teams resources were returned.</p>'}</div></div>`;
-}
-
-function blankPolicy() {
-  return { version: 1, name: "workspace-policy", active: false, subject: { paths: [state.subjectPath, `${state.subjectPath}/**`] }, identity: { tenantId: state.context.tenantId, userId: state.context.userId }, allow: { chats: {}, channels: {}, rawTokenExport: false }, deny: { chats: {}, channels: {} } };
-}
-
-function resourcesForPolicy(policy) {
-  const resources = [...state.resources];
-  const known = new Set(resources.map((resource) => `${resource.kind}:${resource.id}`));
-  for (const rules of [policy.allow, policy.deny]) {
-    for (const [kind, entries] of [["chat", rules?.chats || {}], ["channel", rules?.channels || {}]]) {
-      for (const id of Object.keys(entries)) {
-        if (id !== "*" && !known.has(`${kind}:${id}`)) resources.push({ kind, category: kind === "chat" ? "group" : "channel", id, label: "Unavailable destination", detail: "Stored ID was not returned by Teams discovery", stale: true });
-      }
-    }
-  }
-  return resources;
-}
-
-function destinationType(resource) {
-  return resource.category === "person" ? "Person chat" : resource.category === "group" ? "Group chat" : "Channel";
-}
-
-function normalizedActions(value) {
-  return value === "post" ? ["post"] : value === "read-post" ? ["read", "post"] : ["read"];
-}
-
-function actionValue(actions) {
-  return actions.includes("read") && actions.includes("post") ? "read-post" : actions.includes("post") ? "post" : "read";
-}
-
-function permissionOptions(actions) {
-  const value = actionValue(actions);
-  return `<option value="read" ${value === "read" ? "selected" : ""}>Read</option><option value="post" ${value === "post" ? "selected" : ""}>Post</option><option value="read-post" ${value === "read-post" ? "selected" : ""}>Read and Post</option>`;
-}
-
-function bucketRow(resource, actions, mode) {
-  const value = actionValue(actions);
-  return `<div class="bucket-resource ${mode}" data-mode="${mode}" data-kind="${resource.kind}" data-category="${resource.category}" data-id="${esc(resource.id)}"><div><span class="kind-badge">${esc(destinationType(resource))}</span> <strong>${esc(resource.label)}</strong>${resource.stale ? '<span class="badge error">stale</span>' : ""}<br><small>${esc(resource.detail)} · <code>${esc(resource.id)}</code></small></div><select aria-label="${mode === "allow" ? "Allowed" : "Denied"} access for ${esc(resource.label)}" class="bucket-permission ${value.includes("post") ? "post-access" : "read-access"}">${permissionOptions(actions)}</select><button type="button" class="remove-rule" aria-label="Remove ${mode} rule for ${esc(resource.label)}">Remove</button></div>`;
-}
-
-function destinationSections(draft) {
-  const resources = resourcesForPolicy(draft);
-  const rows = (mode) => resources.flatMap((resource) => {
-    const rules = mode === "allow" ? draft.allow : draft.deny;
-    const map = resource.kind === "chat" ? rules?.chats : rules?.channels;
-    return map?.[resource.id]?.length ? [bucketRow(resource, map[resource.id], mode)] : [];
-  }).join("");
-  const broad = (kind, label) => {
-    const map = kind === "chat" ? draft.allow.chats : draft.allow.channels;
-    const actions = map?.["*"] || [];
-    return `<div class="broad-rule"><div><strong>${esc(label)}</strong><br><small>Applies to every ${kind === "chat" ? "one-to-one and group chat" : "channel"}, except exact denials below.</small></div><label><input class="global-grant" type="checkbox" data-kind="${kind}" data-action="read" ${actions.includes("read") ? "checked" : ""}> Read all</label><label class="post-label"><input class="global-grant" type="checkbox" data-kind="${kind}" data-action="post" ${actions.includes("post") ? "checked" : ""}> Post to all</label></div>`;
-  };
-  return `<section class="guardrail-section"><h4>Allowed destinations <span class="help" title="An empty allow list denies every destination. Broad allowances can be narrowed by exact denials.">ⓘ</span></h4><div class="default-deny">Default: deny every unlisted destination.</div><div class="broad-rules">${broad("chat", "All chats")} ${broad("channel", "All channels")}</div><div id="allowedResources" class="bucket">${rows("allow")}</div></section>
-  <section class="guardrail-section"><h4>Denied destinations <span class="help" title="Exact denials always override exact or broad allowances in this policy.">ⓘ</span></h4><p class="muted">Use Deny from a search result to add an overriding exception.</p><div id="deniedResources" class="bucket">${rows("deny")}</div></section>`;
-}
-
-function policyView(record, isNew = false) {
-  if (record?.error) return `<h2>${esc(record.name)}</h2><div class="banner error">${esc(record.error)}</div><div class="card"><p>${esc(record.file)}</p><pre>${esc(record.raw)}</pre><div class="actions"><button id="copyRaw">Copy YAML</button></div></div>`;
-  const source = record?.policy || blankPolicy();
-  const draft = structuredClone(source);
-  draft.allow ||= {};
-  draft.allow.chats ||= {};
-  draft.allow.channels ||= {};
-  draft.deny ||= {};
-  draft.deny.chats ||= {};
-  draft.deny.channels ||= {};
-  const locked = Boolean(record?.locked);
-  const identityName = state.context.username || state.context.profileName;
-  return `${record?.lockReason ? `<div class="banner">${esc(record.lockReason)}</div>` : ""}<div id="message"></div>
-  <section class="card"><h3>Policy name${locked ? '<span class="badge">export only</span>' : ""}</h3><p class="section-lead">A recognizable name for people reviewing the policy. It does not grant access.</p><input aria-label="Policy name" type="text" id="name" value="${esc(source.name)}" ${record && !isNew ? "disabled" : ""}></section>
-  <section class="card"><h3>Applicability</h3><p class="section-lead">The absolute paths and globs governed by this policy.</p><label class="field-title" for="subjects">Governed paths <span class="help" title="The policy applies when the CLI starts from a matching path.">ⓘ</span></label><textarea id="subjects" rows="4">${esc(source.subject.paths.join("\n"))}</textarea></section>
-  <section class="card"><h3>Guardrails</h3><p class="section-lead">Restrictions enforced whenever this policy applies.</p><section class="guardrail-section"><h4>Identity</h4><div class="identity-card"><span class="icon">🛡️</span><div><strong>${esc(identityName)}</strong><br><span>${esc(source.identity?.tenantId || "any tenant")} / ${esc(source.identity?.userId || "any user")}</span><p class="muted">This is enforced, not selected here. Commands from governed paths must use this tenant and user.</p></div></div></section><section class="guardrail-section"><h4>Find people, group chats, or channels</h4><label class="field-title" for="filter">Destination search <span class="help" title="Searches loaded destinations and the Teams people directory. Only existing chats can receive message permissions.">ⓘ</span></label><input type="text" id="filter" autocomplete="off" placeholder="Type a name such as Michael, a group, channel, or exact ID…"><div id="peopleResults" class="suggestions hidden"></div></section>${destinationSections(draft)}<section class="guardrail-section"><h4>Features</h4><label class="token-row"><input id="rawTokens" type="checkbox" ${source.allow?.rawTokenExport ? "checked" : ""}><span><strong>Allow raw token export <span class="help" title="Permits printing complete bearer tokens. Decoded claims do not require this permission.">ⓘ</span></strong><br><span class="muted">Keep disabled unless an external tool genuinely requires the complete bearer token.</span></span></label></section></section>
-  <div class="actions">${locked ? '<button id="copyApply">Copy apply command</button>' : '<details class="save-menu"><summary class="primary">Save ▾</summary><div class="save-options"><button id="save">Save without activating</button><button id="activate">Save and activate…</button></div></details>'}<button id="copy">Copy YAML</button></div>`;
-}
-
-function collect(base) {
-  const policy = structuredClone(base);
-  policy.name = document.getElementById("name").value.trim();
-  policy.active = Boolean(base.active);
-  policy.subject.paths = document.getElementById("subjects").value.split("\n").map((value) => value.trim()).filter(Boolean);
-  policy.allow = { chats: {}, channels: {}, rawTokenExport: Boolean(document.getElementById("rawTokens").checked) };
-  policy.deny = { chats: {}, channels: {} };
-  for (const kind of ["chat", "channel"]) {
-    const actions = [...document.querySelectorAll(`.global-grant[data-kind="${kind}"]:checked`)].map((input) => input.dataset.action);
-    if (actions.length) (kind === "chat" ? policy.allow.chats : policy.allow.channels)["*"] = actions;
-  }
-  document.querySelectorAll(".bucket-resource").forEach((row) => {
-    const actions = normalizedActions(row.querySelector(".bucket-permission").value);
-    const rules = row.dataset.mode === "deny" ? policy.deny : policy.allow;
-    (row.dataset.kind === "chat" ? rules.chats : rules.channels)[row.dataset.id] = actions;
-  });
-  return policy;
-}
-
-function policyPermits(policy, resource, action) {
-  const allowed = resource.kind === "chat" ? policy.allow?.chats : policy.allow?.channels;
-  const denied = resource.kind === "chat" ? policy.deny?.chats : policy.deny?.channels;
-  const isAllowed = allowed?.[resource.id]?.includes(action) || allowed?.["*"]?.includes(action);
-  const isDenied = denied?.[resource.id]?.includes(action);
-  return Boolean(isAllowed && !isDenied);
-}
-
-function signature(policy) { return JSON.stringify(policy); }
-
-function activationPreview(candidate) {
-  const policies = [...state.policies.filter((stored) => stored.applies && stored.policy?.active).map((stored) => stored.policy), candidate];
-  let readable = 0;
-  let postable = 0;
-  for (const resource of state.resources) {
-    if (policies.every((policy) => policyPermits(policy, resource, "read"))) readable += 1;
-    if (policies.every((policy) => policyPermits(policy, resource, "post"))) postable += 1;
-  }
-  return `${readable} discovered destination${readable === 1 ? "" : "s"} readable; ${postable} postable`;
-}
-
-async function copy(text) { await navigator.clipboard.writeText(text).catch(() => prompt("Copy this text", text)); }
-
-function monitorChanges(base) {
-  initialSignature = signature(collect(base));
-  document.querySelectorAll("input,textarea,select").forEach((element) => {
-    const update = () => { dirty = signature(collect(base)) !== initialSignature; };
-    element.addEventListener("input", update);
-    element.addEventListener("change", update);
-  });
-}
-
-function wire(record, isNew) {
-  if (record?.error) { document.getElementById("copyRaw").onclick = () => copy(record.raw); return; }
-  const base = record?.policy || blankPolicy();
-  const filter = document.getElementById("filter");
-  const peopleResults = document.getElementById("peopleResults");
-  let searchSequence = 0;
-  let searchTimer = null;
-  const updateDirty = () => { dirty = signature(collect(base)) !== initialSignature; };
-  const wireBucketRow = (row) => {
-    const select = row.querySelector(".bucket-permission");
-    select.onchange = () => {
-      select.className = `bucket-permission ${select.value.includes("post") ? "post-access" : "read-access"}`;
-      updateDirty();
-    };
-    row.querySelector(".remove-rule").onclick = () => { row.remove(); updateDirty(); };
-  };
-  document.querySelectorAll(".bucket-resource").forEach(wireBucketRow);
-  const destinationSuggestion = (resource) => `<div class="suggestion" data-kind="${resource.kind}" data-id="${esc(resource.id)}"><span><span class="kind-badge">${esc(destinationType(resource))}</span> <strong>${esc(resource.label)}</strong><br><small>${esc(resource.detail)} · <code>${esc(resource.id)}</code>${resource.hidden ? " · hidden" : ""}${resource.disabled ? " · disabled" : ""}</small></span><span class="suggestion-actions"><select aria-label="Access for ${esc(resource.label)}" class="suggestion-permission read-access">${permissionOptions(["read"])}</select><button type="button" class="allow-result" data-mode="allow">Allow</button><button type="button" class="deny-result" data-mode="deny">Deny</button></span></div>`;
-  const personSuggestion = (person) => {
-    const self = person.id === state.context.userId || person.mri?.includes(state.context.userId);
-    const fields = [person.email, person.jobTitle, `User ID: ${person.id}`, person.mri ? `MRI: ${person.mri}` : null].filter(Boolean);
-    if (person.chatId) {
-      const resource = state.resources.find((candidate) => candidate.kind === "chat" && candidate.id === person.chatId);
-      if (resource) return destinationSuggestion({ ...resource, label: person.displayName || resource.label, detail: fields.join(" · ") });
-    }
-    return `<div class="suggestion directory-only"><span><span class="kind-badge">Directory user</span> <strong>${esc(person.displayName || person.email || person.id)}</strong><br><small>${esc(fields.join(" · "))}</small></span><span class="suggestion-actions"><select disabled><option>Read</option></select><button type="button" disabled title="A policy needs an existing chat ID">Allow</button><span class="muted">${self ? "Current identity—not a message destination" : "Start a one-to-one chat in Teams first"}</span></span></div>`;
-  };
-  const wireSuggestions = () => {
-    peopleResults.querySelectorAll(".suggestion-permission").forEach((select) => {
-      select.onchange = () => { select.className = `suggestion-permission ${select.value.includes("post") ? "post-access" : "read-access"}`; };
-    });
-    peopleResults.querySelectorAll("button[data-mode]").forEach((button) => {
-      button.onclick = () => {
-        const suggestion = button.closest(".suggestion");
-        const mode = button.dataset.mode;
-        const resource = state.resources.find((candidate) => candidate.kind === suggestion.dataset.kind && candidate.id === suggestion.dataset.id);
-        if (!resource) return;
-        document.querySelectorAll(`.bucket-resource[data-kind="${resource.kind}"]`).forEach((row) => { if (row.dataset.id === resource.id) row.remove(); });
-        const container = document.getElementById(mode === "allow" ? "allowedResources" : "deniedResources");
-        container.insertAdjacentHTML("beforeend", bucketRow(resource, normalizedActions(suggestion.querySelector(".suggestion-permission").value), mode));
-        const row = container.lastElementChild;
-        wireBucketRow(row);
-        updateDirty();
-        row.scrollIntoView({ block: "center", behavior: "smooth" });
-      };
-    });
-  };
-  const renderResults = (query, people = []) => {
-    const local = state.resources.filter((resource) => [resource.label, resource.detail, resource.id, destinationType(resource)].join(" ").toLowerCase().includes(query));
-    const matchedChatIds = new Set(people.map((person) => person.chatId).filter(Boolean));
-    const html = [...people.map(personSuggestion), ...local.filter((resource) => !matchedChatIds.has(resource.id)).map(destinationSuggestion)].join("");
-    if (!html) {
-      peopleResults.innerHTML = "";
-      peopleResults.classList.add("hidden");
-      return;
-    }
-    peopleResults.classList.remove("hidden");
-    peopleResults.innerHTML = html;
-    wireSuggestions();
-  };
-  filter.oninput = () => {
-    const query = filter.value.trim().toLowerCase();
-    clearTimeout(searchTimer);
-    if (query.length < 2) {
-      searchSequence += 1;
-      peopleResults.innerHTML = "";
-      peopleResults.classList.add("hidden");
-      return;
-    }
-    renderResults(query);
-    const sequence = ++searchSequence;
-    searchTimer = setTimeout(async () => {
-      try {
-        const result = await api(`/api/people?q=${encodeURIComponent(query)}`);
-        if (sequence === searchSequence) renderResults(query, result.people || []);
-      } catch (error) {
-        if (sequence === searchSequence) {
-          peopleResults.classList.remove("hidden");
-          peopleResults.innerHTML = `<div class="suggestion muted">Directory lookup unavailable: ${esc(error.message)}</div>`;
-        }
-      }
-    }, 300);
-  };
-  document.getElementById("copy").onclick = async () => copy((await api("/api/render", { method: "POST", body: JSON.stringify({ policy: collect(base) }) })).yaml);
-  if (record?.locked) {
-    document.getElementById("copyApply").onclick = async () => copy((await api("/api/export", { method: "POST", body: JSON.stringify({ policy: collect(base), originalName: record.name }) })).command);
-    monitorChanges(base);
+document.getElementById("policyRows").onclick = async (event) => {
+  const copyButton = event.target.closest("[data-copy-path]");
+  if (copyButton) { await copy(copyButton.dataset.copyPath, copyButton); return; }
+  const deleteButton = event.target.closest("[data-delete]");
+  if (deleteButton) {
+    const record = state.policies.find((candidate) => candidate.name === deleteButton.dataset.delete);
+    if (!record || !confirm(`Delete policy ${record.name}?`)) return;
+    await api("/api/delete", { method: "POST", body: JSON.stringify({ name: record.name, expectedHash: record.hash }) });
+    selected = null;
+    await load();
     return;
   }
-  const save = async (mode) => {
-    const policy = collect(base);
-    if (mode === "activate" && !confirm(`Activate this policy? Effective intersection: ${activationPreview(policy)}. It will immediately enforce and become export-only.`)) return;
-    try {
-      const result = await api("/api/save", { method: "POST", body: JSON.stringify({ policy, originalName: record && !isNew ? record.name : null, expectedHash: record?.hash || null, mode }) });
-      dirty = false;
-      if (mode === "activate" && result.protection) document.getElementById("offline").innerHTML = `Policy activated. Editing has ended. Additional protection: <code>${esc(result.protection)}</code>. Restart with: <code>${esc(reconnectCommand)}</code>`;
-      if (mode === "draft") { selected = policy.name; await load(); }
-    } catch (error) {
-      const target = document.getElementById("message");
-      target.innerHTML = `<div class="banner error">${esc(error.message)}</div>` + (error.data?.yaml ? `<button id="copyFailed">Copy YAML</button>${error.data.command ? '<button id="copyCommand">Copy replacement command</button>' : ""}` : "");
-      if (error.data?.yaml) document.getElementById("copyFailed").onclick = () => copy(error.data.yaml);
-      if (error.data?.command) document.getElementById("copyCommand").onclick = () => copy(error.data.command);
-    }
-  };
-  document.getElementById("save").onclick = () => save("draft");
-  document.getElementById("activate").onclick = () => save("activate");
-  monitorChanges(base);
-}
+  if (event.target.closest("[data-cancel-new]")) { selected = null; dirty = false; await load(); return; }
+  const row = event.target.closest("[data-policy]");
+  if (!row || row.dataset.policy === "__new__") return;
+  const record = state.policies.find((candidate) => candidate.name === row.dataset.policy);
+  if (record) choose(record);
+};
 
-function render() {
-  renderTabs();
-  const content = document.getElementById("content");
-  if (selected === "effective") { content.innerHTML = effectiveView(); return; }
-  let record = null;
-  let isNew = false;
-  if (selected === "new") isNew = true;
-  else record = state.policies.find((policy) => policy.name === selected);
-  content.innerHTML = policyView(record, isNew);
-  wire(record, isNew);
+document.getElementById("showAll").onchange = (event) => { showAll = event.target.checked; renderPolicyTable(); };
+document.getElementById("newPolicy").onclick = () => choose(null);
+document.getElementById("closeEditor").onclick = closeEditor;
+
+async function claim() {
+  const token = location.pathname.startsWith("/claim/") ? decodeURIComponent(location.pathname.slice(7)) : "";
+  if (token) {
+    const result = await api("/api/claim", { method: "POST", body: JSON.stringify({ token }) });
+    csrf = result.csrf;
+    history.replaceState({}, "", "/");
+  } else csrf = (await api("/api/session")).csrf;
+  await load();
+  connect();
 }
 
 claim().catch((error) => {

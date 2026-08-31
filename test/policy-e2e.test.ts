@@ -117,7 +117,7 @@ test("inactive policies audit while active policy denials make zero message POST
       name: "e2e",
       active: true,
       subject: { paths: [subjectPath] },
-      identity,
+      identity: { allowed: [identity] },
       allow: {
         chats: { "allowed-chat": ["post"] },
         channels: {},
