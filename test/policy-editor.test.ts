@@ -45,6 +45,8 @@ test("secures the editor session and atomically saves a draft", async () => {
     assert.match(pageHtml, /<script type="module" nonce=/);
     assert.match(pageHtml, /Policy Editor for workspace/);
     assert.match(pageHtml, /Workspace policies/);
+    assert.match(pageHtml, /Show all policies on this system/);
+    assert.doesNotMatch(pageHtml, /showAllLabel"\)\.classList\.toggle\("hidden"/);
     assert.match(pageHtml, /Allowed identities/);
     assert.match(pageHtml, /Select another identity/);
     assert.match(pageHtml, /Group chats/);

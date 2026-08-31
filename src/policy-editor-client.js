@@ -112,7 +112,6 @@ function fileCell(record) {
 
 function renderPolicyTable() {
   const rows = shownPolicies();
-  document.getElementById("showAllLabel").classList.toggle("hidden", state.policies.length <= 1);
   const html = rows.map((record) => {
     const current = selectedRecord === record;
     const match = record.matchingPaths?.[0] || (record.applies ? record.policy?.subject?.paths?.[0] : "Not applicable");
