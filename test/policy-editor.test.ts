@@ -53,8 +53,7 @@ test("secures the editor session and atomically saves a draft", async () => {
     assert.match(pageHtml, /For anyone not in the list, or when set to default/);
     assert.match(pageHtml, /Save and activate/);
     assert.match(pageHtml, /Close without saving/);
-    assert.doesNotMatch(pageHtml, /<header>.*id="connection"/);
-    assert.match(pageHtml, /dirtyState.*connectionMarkup/);
+    assert.doesNotMatch(pageHtml, /id="connection"|● connected/);
     assert.match(pageHtml, /data-copy-path/);
     assert.match(pageHtml, /\/api\/people\?q=/);
     assert.match(pageHtml, /\/api\/delete/);
@@ -64,7 +63,7 @@ test("secures the editor session and atomically saves a draft", async () => {
     assert.match(pageHtml, /class="resource-icon/);
     assert.match(pageHtml, /aria-busy/);
     assert.match(pageHtml, /alreadyAdded \? "Added" : "Add"/);
-    assert.match(pageHtml, /person\.aliases/);
+    assert.match(pageHtml, /configuredIds\(resource\.kind\)\.has\(resource\.id\)/);
     assert.match(pageHtml, /id="closeEditor"/);
     assert.doesNotMatch(pageHtml, /skypetoken|accessToken/);
 

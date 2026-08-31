@@ -49,7 +49,6 @@ export type ChannelSummary = {
 export type PersonSummary = {
   id: string;
   mri: string | null;
-  aliases: string[];
   displayName: string | null;
   email: string | null;
   jobTitle: string | null;
@@ -263,14 +262,8 @@ function normalizePersonSummary(value: unknown): PersonSummary | null {
   const person = value as RawPerson;
   const identifiers = personIdentifiers(person);
   if (!identifiers) return null;
-  const aliases = [
-    stringValue(person.Id),
-    stringValue(person.id),
-    identifiers.mri,
-  ].filter((identifier): identifier is string => Boolean(identifier) && identifier !== identifiers.id);
   return {
     ...identifiers,
-    aliases: [...new Set(aliases)],
     displayName: stringValue(person.displayName) ?? stringValue(person.DisplayName) ??
       stringValue(person.friendlyName),
     email: stringValue(person.email) ?? stringValue(person.Email) ??

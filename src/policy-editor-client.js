@@ -31,22 +31,6 @@ async function copy(text, button) {
   setTimeout(() => { button.textContent = label; }, 1_200);
 }
 
-function connectionText() {
-  if (!socket) return "● connecting";
-  if (socket.readyState === WebSocket.OPEN) return "● connected";
-  if (socket.readyState === WebSocket.CLOSED || socket.readyState === WebSocket.CLOSING) return "● disconnected";
-  return "● connecting";
-}
-
-function connectionMarkup() {
-  return `<span id="connection" class="status">${connectionText()}</span>`;
-}
-
-function setConnection(text) {
-  const indicator = document.getElementById("connection");
-  if (indicator) indicator.textContent = text;
-}
-
 function blankPolicy() {
   const identity = state.context.tenantId && state.context.userId
     ? { allowed: [{ tenantId: state.context.tenantId, userId: state.context.userId }] }
@@ -251,10 +235,7 @@ function addResource(resource) {
 
 function renderSuggestions(resources) {
   const unique = [...new Map(resources.map((resource) => [`${resource.kind}:${resource.id}`, resource])).values()];
-  const configured = (resource) => {
-    const candidates = new Set([resource.id, ...(resource.participantIds || [])]);
-    return [...configuredIds(resource.kind)].find((id) => candidates.has(id));
-  };
+  const configured = (resource) => configuredIds(resource.kind).has(resource.id) ? resource.id : undefined;
   let hydrated = false;
   for (const resource of unique) {
     const configuredId = configured(resource);
@@ -292,7 +273,7 @@ function searchResources(query) {
     try {
       const result = await api(`/api/people?q=${encodeURIComponent(query)}`);
       if (sequence !== searchSequence) return;
-      renderSuggestions(result.people.map((person) => ({ kind: "person", id: person.id, participantIds: [person.mri, ...(person.aliases || [])].filter(Boolean), label: person.displayName || person.email || person.id, detail: person.email || person.mri || person.id })));
+      renderSuggestions(result.people.map((person) => ({ kind: "person", id: person.id, label: person.displayName || person.email || person.id, detail: person.email || person.mri || person.id })));
     } catch (error) {
       if (sequence === searchSequence) document.getElementById("message").innerHTML = `<div class="banner error">${esc(error.message)}</div>`;
     } finally {
@@ -333,7 +314,7 @@ function renderIdentities() {
 
 function renderEditor() {
   if (selectedRecord?.error) {
-    document.getElementById("content").innerHTML = `<div class="section"><h3>${esc(selectedRecord.name)}</h3><div class="banner error">${esc(selectedRecord.error)}</div><pre>${esc(selectedRecord.raw)}</pre><div class="footer"><span class="dirty"></span>${connectionMarkup()}<button id="copyRaw">Copy YAML</button></div></div>`;
+    document.getElementById("content").innerHTML = `<div class="section"><h3>${esc(selectedRecord.name)}</h3><div class="banner error">${esc(selectedRecord.error)}</div><pre>${esc(selectedRecord.raw)}</pre><div class="footer"><span class="dirty"></span><button id="copyRaw">Copy YAML</button></div></div>`;
     document.getElementById("copyRaw").onclick = (event) => copy(selectedRecord.raw, event.currentTarget);
     return;
   }
@@ -343,7 +324,7 @@ function renderEditor() {
     <section class="section"><h3>Allowed identities</h3><p class="section-lead">After this policy applies, only identities on this whitelist may be used in the workspace.</p><div class="table-wrap"><table><thead><tr><th>Allowed identity</th><th></th></tr></thead><tbody id="identityRows"></tbody></table></div></section>
     <section class="section"><h3>Features</h3><label class="token"><input id="rawTokens" type="checkbox" ${draft.allow.rawTokenExport ? "checked" : ""}><span><strong>Allow raw token export</strong><span class="detail">Keep disabled unless an external tool genuinely requires a complete bearer token.</span></span></label></section>
     <section class="section"><h3>Applicability</h3><p class="section-lead">The matching paths determine whether this policy applies to the current workspace.</p><textarea id="subjects" class="paths" rows="3">${esc(draft.subject.paths.join("\n"))}</textarea></section>
-    <div class="footer"><span id="dirtyState" class="dirty">${dirty ? "Unsaved changes" : "No unsaved changes"}</span>${connectionMarkup()}<button id="copyYaml">Copy YAML</button>${locked ? '<button id="copyApply">Copy apply command</button>' : '<button id="savePolicy">Save</button><button id="activatePolicy" class="primary">Save and activate</button>'}</div>`;
+    <div class="footer"><span id="dirtyState" class="dirty">${dirty ? "Unsaved changes" : "No unsaved changes"}</span><button id="copyYaml">Copy YAML</button>${locked ? '<button id="copyApply">Copy apply command</button>' : '<button id="savePolicy">Save</button><button id="activatePolicy" class="primary">Save and activate</button>'}</div>`;
   renderRuleRows();
   renderIdentities();
   document.querySelectorAll("[data-entity]").forEach((button) => {
@@ -412,9 +393,7 @@ async function load() {
 function connect() {
   const protocol = location.protocol === "https:" ? "wss" : "ws";
   socket = new WebSocket(`${protocol}://${location.host}/ws`);
-  socket.onopen = () => { setConnection("● connected"); };
   socket.onclose = () => {
-    setConnection("● disconnected");
     document.getElementById("offline").classList.remove("hidden");
     document.querySelectorAll("button,input,textarea,select").forEach((element) => { element.disabled = true; });
   };
@@ -468,5 +447,4 @@ async function claim() {
 
 claim().catch((error) => {
   document.getElementById("content").innerHTML = `<div class="banner error">${esc(error.message)}</div>`;
-  setConnection("● unavailable");
 });

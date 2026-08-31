@@ -97,7 +97,6 @@ test("searches people with the search token and preserves server ranking", async
   assert.deepEqual(result.people[0], {
     id: "person-2",
     mri: "8:orgid:person-2",
-    aliases: ["legacy-person-2@tenant", "8:orgid:person-2"],
     displayName: "Grace Hopper",
     email: "grace@example.com",
     jobTitle: "Rear Admiral",
