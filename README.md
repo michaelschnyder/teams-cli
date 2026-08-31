@@ -1,6 +1,6 @@
 # teams-cli
 
-A safety-conscious command-line client for persistent Microsoft Teams sessions. It supports multiple tenants and users, named profiles, structured output, agent skills, and optional subject-path policies that can prevent messages from being sent to unintended chats or channels.
+A safety-conscious command-line client for persistent Microsoft Teams sessions. It supports multiple tenants and users, named profiles, structured output, agent skills, and optional subject-path policies that constrain message reads, posts, and raw-token export.
 
 > [!WARNING]
 > This project relies on undocumented Microsoft Teams behavior and a Microsoft first-party client identity. It is unsupported, may be blocked by tenant policy, and may stop working without notice. Obtain organizational approval before using it, and never run live write tests against a production tenant.
@@ -115,7 +115,7 @@ version    show the installed version or upgrade it
 skills     list, locate, install, and refresh packaged agent skills
 auth       login, refresh, whoami, tokens, logout
 profile    list, show, save, remove
-policy     init, list, show, check, activate
+policy     init, list, show, check, activate, edit
 person     search, get, image
 chat       list, get
 channel    list, get
@@ -140,6 +140,10 @@ teams-cli profile remove work
 ```
 
 Configuration, authentication, browser state, policies, update state, and managed skill-installation records live under `~/.teams-cli/`. Secret-bearing files and directories are created with owner-only permissions on supported operating systems.
+
+Run `teams-cli policy edit` from a workspace to start the temporary least-privilege editor. The CLI prints a one-time local URL that can be opened in a normal browser or an AI tool's browser sidebar. The editor discovers names and participants for selection, but it cannot read message contents, initiate chats, or send messages.
+
+## Further documentation
 
 See [profiles and precedence](docs/use/profiles.md) and [authentication and token handling](docs/use/authentication.md).
 

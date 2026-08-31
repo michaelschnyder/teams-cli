@@ -1,6 +1,6 @@
 # Policies
 
-Policies are optional named YAML files under `~/.teams-cli/policies/`. They limit the effective identity, message destinations, and raw-token export for matching subject paths.
+Policies are optional named YAML files under `~/.teams-cli/policies/`. They limit the effective identity, message reads and posts, and raw-token export for matching subject paths.
 
 ## How policy selection works
 
@@ -28,7 +28,7 @@ New policies are inactive. An inactive policy runs in audit mode:
 - The CLI warns when it would deny the selected identity or operation.
 - The operation remains allowed unless another applicable active policy denies it.
 
-An active policy enforces its identity and allowlists. Active policies cannot be deactivated through the CLI. This makes activation deliberate without claiming that the file itself is locked.
+An active policy enforces its identity, allowances, and denials. An empty allow map denies every message destination. The special `"*"` destination grants an action to all chats or all channels. Exact denials override both exact and wildcard allowances. Active policies cannot be deactivated or saved directly through the browser editor. Their fields remain editable so the revised YAML or an atomic elevated shell command can be exported. This makes activation deliberate without claiming that the file itself is immutable on disk.
 
 ## Create and refine a policy
 
@@ -62,13 +62,50 @@ identity:
   tenantId: tenant-id
   userId: user-id
 allow:
-  messageSend:
-    chats: []
-    channels: []
+  chats: {}
+  channels: {}
   rawTokenExport: false
+deny:
+  chats: {}
+  channels: {}
 ```
 
-Edit the file outside the CLI and add only the exact, case-sensitive chat and channel IDs required by the subject. A chat entry never permits a channel with the same text. Set `rawTokenExport: true` only when complete bearer tokens are genuinely required; decoded claims do not need that permission.
+Each destination maps to one or both actions:
+
+```yaml
+allow:
+  chats:
+    "19:example-chat@thread.v2": [read]
+    "*": [read]
+  channels:
+    "19:example-channel@thread.tacv2": [read, post]
+  rawTokenExport: false
+deny:
+  chats:
+    "19:sensitive-chat@thread.v2": [read, post]
+  channels: {}
+```
+
+`post` does not imply `read`. Wildcards are supported only in `allow`; denials name exact destinations and always take precedence within that policy.
+
+`read` permits `message list/get`; `post` permits `message send` and does not imply read access. Chat/channel discovery, names, participants, teams, and other metadata are deliberately not constrained in this release. A chat entry never permits a channel with the same ID. Set `rawTokenExport: true` only when complete bearer tokens are genuinely required; decoded claims do not need it.
+
+## Browser editor
+
+Start the editor in the current workspace:
+
+```bash
+teams-cli --profile personal policy edit
+teams-cli --profile personal policy edit --port 58326 --open
+```
+
+The CLI tries ports 58326 through 58335 and then an operating-system-assigned port. It binds only to loopback outside containers. In a detected container it binds all interfaces so an explicitly published port can reach it; publish that port only onto a trusted localhost interface.
+
+The printed URL contains a one-time bootstrap token. The page exchanges it for an HttpOnly local session, removes it from the address bar, and connects back to the CLI. Draft saves keep the editor running. Save-and-Activate, Done, Ctrl-C, or closing the last editor connection ends the temporary server. There is no daemon.
+
+The Effective Access tab shows the intersection of active policies. Policy tabs display one-to-one names, returned group participants, and team/channel names. Active or filesystem-read-only policies can be edited in the page, but direct saving remains blocked; export the resulting YAML or copy the displayed atomic elevated apply command. Writable drafts can be saved normally.
+
+The editor is a policy-authoring interface, not a Teams replacement. It has no endpoint or control for reading message contents, starting conversations, or sending messages.
 
 Inspect configured or applicable policies:
 
@@ -84,6 +121,8 @@ Check representative decisions while the policy is still inactive. Warnings show
 ```bash
 teams-cli --profile personal policy check send --chat CHAT_ID
 teams-cli --profile personal policy check send --channel CHANNEL_ID
+teams-cli --profile personal policy check read --chat CHAT_ID
+teams-cli --profile personal policy check read --channel CHANNEL_ID
 teams-cli --profile personal policy check raw-tokens
 ```
 
@@ -113,7 +152,7 @@ Read-only permissions are defense in depth, not an immutable lock. A process wit
 
 ## Deactivate, revise, or remove a policy
 
-The CLI intentionally has no deactivate, edit, or remove command. Use `policy show NAME` to obtain the exact file path. If the store is malformed, the error identifies the offending file.
+The CLI intentionally has no deactivate or remove command. `policy edit` is the browser editor command; it does not make active policies editable. Use `policy show NAME` to obtain the exact file path. If the normal policy loader rejects the store, the editor can still show each malformed file and its validation problem.
 
 On POSIX systems, make that one file writable before changing it:
 
@@ -133,4 +172,4 @@ If permissions are controlled by a read-only mount, sandbox, separate OS identit
 
 ## Security boundary
 
-Policies primarily prevent accidental messages to the wrong destinations. Strong, non-bypassable enforcement requires controls outside the agent process, such as a separate OS identity, read-only container mount, restricted network egress, or server-side Teams permissions.
+Policies primarily prevent accidental message disclosure or posts to the wrong destinations. Strong, non-bypassable enforcement requires controls outside the agent process, such as a separate OS identity, read-only container mount, restricted network egress, or server-side Teams permissions.

@@ -6,10 +6,11 @@
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
+    "allowJs": true,
     "skipLibCheck": true,
     "rootDir": "src",
     "outDir": "dist",
     "types": ["node"]
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.js"]
 }

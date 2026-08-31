@@ -47,7 +47,7 @@ test("exposes version, skills, auth, profile, policy, person, chat, channel, and
   assert.deepEqual(command("profile")?.commands.map((child) => child.name()), ["list", "show", "save", "remove"]);
   assert.deepEqual(
     command("policy")?.commands.map((child) => child.name()),
-    ["init", "list", "show", "check", "activate"],
+    ["init", "list", "show", "check", "activate", "edit"],
   );
   assert.deepEqual(command("person")?.commands.map((child) => child.name()), ["search", "get", "image"]);
   const imageCommand = command("person")?.commands.find((child) => child.name() === "image");

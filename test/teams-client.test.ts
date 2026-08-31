@@ -75,7 +75,8 @@ test("searches people with the search token and preserves server ranking", async
         Suggestions: [
           {
             MRI: "8:orgid:person-2",
-            ObjectId: "person-2",
+            Id: "legacy-person-2@tenant",
+            ExternalDirectoryObjectId: "person-2",
             DisplayName: "Grace Hopper",
             EmailAddresses: [{ Address: "grace@example.com" }],
             JobTitle: "Rear Admiral",
