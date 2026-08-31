@@ -15,12 +15,7 @@ import {
 
 test("loads packaged skills and resolves broad platform aliases", async () => {
   const skills = await loadBundledSkills();
-  assert.deepEqual(skills.map(({ name }) => name), [
-    "teams-authentication",
-    "teams-cli",
-    "teams-messaging-policies",
-    "teams-reading",
-  ]);
+  assert.deepEqual(skills.map(({ name }) => name), ["teams-cli"]);
   assert.equal(lookupSkillPlatform("copilot")?.name, "github-copilot");
   assert.equal(lookupSkillPlatform("gemini")?.name, "gemini-cli");
 });

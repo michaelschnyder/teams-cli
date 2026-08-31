@@ -174,7 +174,7 @@ Applicable active policies can deny raw token export. Treat exported tokens like
 
 ## Agent skills
 
-The npm package includes skills that teach compatible coding agents how to use this CLI safely. Auto-detection supports Codex, Claude Code, Cursor, GitHub Copilot, OpenCode, Windsurf, Gemini CLI, Pi, and generic `.agents/skills` environments.
+The npm package includes a `teams-cli` skill that teaches compatible coding agents how to use this CLI safely. Auto-detection supports Codex, Claude Code, Cursor, GitHub Copilot, OpenCode, Windsurf, Gemini CLI, Pi, and generic `.agents/skills` environments.
 
 ```bash
 teams-cli skills list
@@ -182,7 +182,7 @@ teams-cli skills path
 teams-cli skills install
 ```
 
-When several environments are detected, the skills are installed into all of them. Specify a target when detection is unavailable:
+When several environments are detected, the skill is installed into all of them. Specify a target when detection is unavailable:
 
 ```bash
 teams-cli skills install codex
