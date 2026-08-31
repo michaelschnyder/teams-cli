@@ -438,6 +438,22 @@ export function selectedTarget(options: TargetOptions): MessageTarget {
     : { kind: "channel", id: options.channel as string };
 }
 
+async function resolvePolicyMessageTarget(
+  session: StoredSession,
+  identity: Identity,
+  target: MessageTarget,
+): Promise<MessageTarget> {
+  if (target.kind === "channel") return target;
+  const { chat } = await getChat(session, target.id);
+  if (!chat.oneOnOne) return { ...target, category: "group" };
+  const personIds = [...new Set(chat.participants.flatMap((participant) =>
+    [participant.objectId, participant.id]
+      .filter((value): value is string => Boolean(value))
+      .flatMap((value) => value.startsWith("8:orgid:") ? [value, value.slice("8:orgid:".length)] : [value])
+      .filter((value) => value !== identity.userId && value !== `8:orgid:${identity.userId}`)))];
+  return { ...target, category: "person", personIds };
+}
+
 async function messageBody(body: string | undefined): Promise<string> {
   let value = body;
   if (value === undefined) {
@@ -820,17 +836,14 @@ export function createProgram(options: { storageRoot?: string; subjectPath?: str
       }
       const target = selectedTarget(options);
       const result = await runWithStatus(program, options.json ?? false, "Fetching messages…", () =>
-        withAuthorizedDataSession(program, paths, subjectPath, "skype", (session, runtime) => listMessages(
-          session,
-          target,
-          options,
-          undefined,
-          async () => {
+        withAuthorizedDataSession(program, paths, subjectPath, ["chat", "skype"], async (session, runtime) => {
+          const policyTarget = await resolvePolicyMessageTarget(session, runtime.identity, target);
+          return listMessages(session, target, options, undefined, async () => {
             const current = await resolvePolicies(paths, subjectPath);
             runtime.reportPolicyWarnings(policyStatusWarnings(current));
-            runtime.reportPolicyWarnings(requireMessageRead(current, runtime.identity, target));
-          },
-        )));
+            runtime.reportPolicyWarnings(requireMessageRead(current, runtime.identity, policyTarget));
+          });
+        }));
       writeData(result, renderMessages(result), options.json ?? false);
     });
   message.command("get").description("Get one message by ID")
@@ -841,17 +854,14 @@ export function createProgram(options: { storageRoot?: string; subjectPath?: str
     .action(async (messageId: string, options: TargetOptions & { json?: boolean }) => {
       const target = selectedTarget(options);
       const result = await runWithStatus(program, options.json ?? false, "Fetching message…", () =>
-        withAuthorizedDataSession(program, paths, subjectPath, "skype", (session, runtime) => getMessage(
-          session,
-          target,
-          messageId,
-          undefined,
-          async () => {
+        withAuthorizedDataSession(program, paths, subjectPath, ["chat", "skype"], async (session, runtime) => {
+          const policyTarget = await resolvePolicyMessageTarget(session, runtime.identity, target);
+          return getMessage(session, target, messageId, undefined, async () => {
             const current = await resolvePolicies(paths, subjectPath);
             runtime.reportPolicyWarnings(policyStatusWarnings(current));
-            runtime.reportPolicyWarnings(requireMessageRead(current, runtime.identity, target));
-          },
-        )));
+            runtime.reportPolicyWarnings(requireMessageRead(current, runtime.identity, policyTarget));
+          });
+        }));
       writeData(result, renderMessageResult(result), options.json ?? false);
     });
   message.command("send").description("Send one policy-authorized plain-text message")
@@ -866,24 +876,20 @@ export function createProgram(options: { storageRoot?: string; subjectPath?: str
       const sessionId = randomUUID();
       const result = await runWithStatus(program, options.json ?? false, "Sending message…", async () => {
         const runtime = await authorizedRuntime(program, paths, subjectPath);
-        runtime.reportPolicyWarnings(requireMessageSend(runtime.policies, runtime.identity, target));
         return withDataSession(
           paths,
           runtime.identity,
           runtime.context.browser,
-          "skype",
-          (session) => sendMessage(
-            session,
-            target,
-            body,
-            requestId,
-            sessionId,
-            async () => {
+          ["chat", "skype"],
+          async (session) => {
+            const policyTarget = await resolvePolicyMessageTarget(session, runtime.identity, target);
+            runtime.reportPolicyWarnings(requireMessageSend(runtime.policies, runtime.identity, policyTarget));
+            return sendMessage(session, target, body, requestId, sessionId, async () => {
               const currentPolicies = await resolvePolicies(paths, subjectPath);
               runtime.reportPolicyWarnings(policyStatusWarnings(currentPolicies));
-              runtime.reportPolicyWarnings(requireMessageSend(currentPolicies, runtime.identity, target));
-            },
-          ),
+              runtime.reportPolicyWarnings(requireMessageSend(currentPolicies, runtime.identity, policyTarget));
+            });
+          },
         );
       });
       writeData(result, renderMessageSendResult(result), options.json ?? false);

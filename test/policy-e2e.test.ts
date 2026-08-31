@@ -23,6 +23,18 @@ test("inactive policies audit while active policy denials make zero message POST
     response.writeHead(200, { "content-type": "application/json" });
     response.end();
   });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    if (url.hostname === "teams.microsoft.com" && url.pathname.startsWith("/api/csa/api/v1/teams/users/me")) {
+      return Promise.resolve(new Response(JSON.stringify({
+        chats: ["audit-chat", "denied-chat", "allowed-chat", "unrestricted-chat"].map((id) => ({ id, title: id, isOneOnOne: false, members: [] })),
+        users: [],
+        metadata: { hasMoreChats: false },
+      }), { status: 200, headers: { "content-type": "application/json" } }));
+    }
+    return originalFetch(input, init);
+  };
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
     const address = server.address();
@@ -164,6 +176,7 @@ test("inactive policies audit while active policy denials make zero message POST
     );
     assert.equal(requests, 3);
   } finally {
+    globalThis.fetch = originalFetch;
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     await rm(root, { recursive: true, force: true });
     await rm(subjectPath, { recursive: true, force: true });
