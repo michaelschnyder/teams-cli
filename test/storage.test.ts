@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import test from "node:test";
 import {
   clearAuthentication,
@@ -31,9 +31,9 @@ test("partitions auth and browser state below a replaceable storage root", async
   try {
     const paths = storagePaths(root);
     const identity = { tenantId: "tenant", userId: "user-id" };
-    assert.match(paths.sessionFile(identity), new RegExp(`^${join(root, "auth")}`));
+    assert.ok(paths.sessionFile(identity).startsWith(`${join(root, "auth")}${sep}`));
     assert.equal(paths.configFile, join(root, "config.yaml"));
-    assert.match(paths.browserProfile(identity, "edge"), new RegExp(`^${join(root, "browser-profiles")}`));
+    assert.ok(paths.browserProfile(identity, "edge").startsWith(`${join(root, "browser-profiles")}${sep}`));
     assert.match(paths.browserProfile(identity, "chrome"), /chrome$/);
 
     await prepareBrowserProfile(paths, identity, "chrome");

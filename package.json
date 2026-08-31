@@ -1,31 +1,63 @@
 {
-  "name": "teams-cli",
+  "name": "@michaelschnyder/teams-cli",
   "version": "0.1.0",
-  "private": true,
-  "description": "A minimal CLI for a persistent Microsoft Teams session",
+  "description": "A safety-conscious CLI for persistent Microsoft Teams sessions",
   "type": "module",
   "bin": {
-    "teams-cli": "dist/src/cli.js"
+    "teams-cli": "dist/cli.js"
   },
+  "files": [
+    "dist",
+    "docs/use",
+    "docs/releasing.md",
+    "README.md",
+    "SECURITY.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
   "scripts": {
     "dev": "tsx src/cli.ts",
-    "build": "tsc",
+    "clean": "node scripts/clean.mjs",
+    "build": "npm run clean && tsc && node scripts/copy-skills.mjs && node scripts/sync-skill-versions.mjs && node scripts/make-executable.mjs",
     "check": "tsc --noEmit",
     "test": "node --import tsx --test test/**/*.test.ts",
     "test:e2e": "node --import tsx --test test/e2e/*.e2e.ts",
-    "test:live": "npm run test:e2e"
+    "test:live": "npm run test:e2e",
+    "prepack": "npm run build",
+    "package:check": "node scripts/check-package.mjs",
+    "package:smoke": "node scripts/smoke-package.mjs"
+  },
+  "keywords": [
+    "microsoft-teams",
+    "teams",
+    "cli",
+    "automation",
+    "agent-skills"
+  ],
+  "author": "Michael Schnyder",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/michaelschnyder/teams-cli.git"
+  },
+  "bugs": {
+    "url": "https://github.com/michaelschnyder/teams-cli/issues"
+  },
+  "homepage": "https://github.com/michaelschnyder/teams-cli#readme",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "dependencies": {
-    "commander": "^14.0.3",
+    "commander": "^15.0.0",
     "playwright-core": "^1.54.2",
     "ws": "^8.21.3",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
-    "@types/node": "^24.2.0",
-    "@types/ws": "^8.18.1",
-    "tsx": "^4.20.3",
-    "typescript": "^5.9.2"
+    "@types/node": "^26.3.0",
+    "tsx": "^4.23.12",
+    "typescript": "^7.0.2"
   },
   "engines": {
     "node": ">=22.20.0"

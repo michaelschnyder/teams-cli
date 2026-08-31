@@ -6,7 +6,7 @@ The policy model separates editable configuration from authorization constraints
 
 Project-specific research and decisions remain available in:
 
-- [Research log](../docs/research.md)
+- [Research log](../research.md)
 - [Browser-backed private Teams API](adr/0001-browser-backed-private-teams-api.md)
 - [Server-backed reads](adr/0002-server-backed-chat-and-message-reads.md)
 - [CLI command conventions](adr/0003-use-oso-cli-command-conventions.md)

@@ -8,6 +8,8 @@ Run deterministic checks with:
 npm run check
 npm test
 npm run build
+npm run package:check
+npm run package:smoke
 ```
 
 The default suite uses synthetic tokens, mocked APIs, temporary storage roots, and loopback HTTP servers. Its critical security assertions prove that inactive policies audit without blocking and that active denials make the real CLI produce zero message GETs or POSTs. It also checks policy intersection, subject globs, permission diagnostics, no-active-policy behavior, raw-token gating, profile precedence, tenant/user storage isolation, one-time editor claims, Origin/CSRF enforcement, locked policies, and atomic editor saves.

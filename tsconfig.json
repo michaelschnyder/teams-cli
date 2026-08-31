@@ -8,7 +8,9 @@
     "exactOptionalPropertyTypes": true,
     "allowJs": true,
     "skipLibCheck": true,
-    "outDir": "dist"
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": ["node"]
   },
-  "include": ["src/**/*.ts", "src/**/*.js", "test/**/*.ts"]
+  "include": ["src/**/*.ts", "src/**/*.js"]
 }
