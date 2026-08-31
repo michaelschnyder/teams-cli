@@ -96,9 +96,6 @@ function fileCell(record) {
 
 function renderPolicyTable() {
   const rows = shownPolicies();
-  const virtualCount = selected === "__new__" ? 1 : 0;
-  const total = state.policies.length + virtualCount;
-  document.getElementById("policyTableWrap").classList.toggle("hidden", total <= 1);
   document.getElementById("showAllLabel").classList.toggle("hidden", state.policies.length <= 1);
   const html = rows.map((record) => {
     const current = selectedRecord === record;
@@ -164,6 +161,19 @@ function entityKind() {
   return entity === "people" ? "person" : entity === "chats" ? "chat" : "channel";
 }
 
+function resourceIcon(kind) {
+  const paths = kind === "person"
+    ? '<circle cx="10" cy="7" r="3"></circle><path d="M4 18c0-3.2 2.4-5 6-5s6 1.8 6 5"></path>'
+    : kind === "chat"
+      ? '<path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h7A2.5 2.5 0 0 1 16 5.5v4a2.5 2.5 0 0 1-2.5 2.5H9l-4 3v-3.6A2.5 2.5 0 0 1 4 9.5z"></path><circle cx="8" cy="7.5" r=".6"></circle><circle cx="10" cy="7.5" r=".6"></circle><circle cx="12" cy="7.5" r=".6"></circle>'
+      : '<path d="M4 4h12v12H4z"></path><path d="M8 4v12M4 8h12"></path>';
+  return `<span class="resource-icon ${esc(kind)}" aria-hidden="true"><svg viewBox="0 0 20 20" focusable="false">${paths}</svg></span>`;
+}
+
+function resourceLabel(resource) {
+  return `<span class="resource-label">${resourceIcon(resource.kind)}<span><strong>${esc(resource.label)}</strong><span class="detail">${esc(resource.detail || resource.id)}</span></span></span>`;
+}
+
 function configuredIds(kind) {
   const name = mapName(kind);
   return new Set([...Object.keys(draft.allow[name] || {}), ...Object.keys(draft.deny[name] || {})].filter((id) => id !== "*"));
@@ -192,7 +202,7 @@ const defaultText = {
 function renderRuleRows() {
   const kind = entityKind();
   const resources = ruleResources();
-  const rows = resources.map((resource, index) => `<tr><td>${esc(resource.label)}<span class="detail">${esc(resource.detail || resource.id)}</span></td><td>${decisionSelect(actionDecision(kind, resource.id, "read"), "rule", "read", index)}</td><td>${decisionSelect(actionDecision(kind, resource.id, "post"), "rule", "post", index)}</td><td><button type="button" data-remove-rule="${index}">Remove</button></td></tr>`).join("");
+  const rows = resources.map((resource, index) => `<tr><td>${resourceLabel(resource)}</td><td>${decisionSelect(actionDecision(kind, resource.id, "read"), "rule", "read", index)}</td><td>${decisionSelect(actionDecision(kind, resource.id, "post"), "rule", "post", index)}</td><td><button type="button" data-remove-rule="${index}">Remove</button></td></tr>`).join("");
   const fallback = `<tr class="default-row"><td>Default<span class="detail">${esc(defaultText[entity])}</span></td><td>${decisionSelect(defaultDecision(kind, "read"), "fallback", "read")}</td><td>${decisionSelect(defaultDecision(kind, "post"), "fallback", "post")}</td><td></td></tr>`;
   document.getElementById("resourceRows").innerHTML = rows + fallback;
   document.querySelectorAll("[data-rule]").forEach((control) => {
@@ -228,18 +238,27 @@ function renderSuggestions(resources) {
   const unique = [...new Map(resources.map((resource) => [`${resource.kind}:${resource.id}`, resource])).values()]
     .filter((resource) => !configuredIds(resource.kind).has(resource.id));
   const target = document.getElementById("searchResults");
-  target.innerHTML = unique.map((resource, index) => `<div class="suggestion"><span><strong>${esc(resource.label)}</strong><small class="detail">${esc(resource.detail || resource.id)}</small></span><button type="button" data-add-result="${index}" class="primary">Add</button></div>`).join("");
+  target.innerHTML = unique.map((resource, index) => `<div class="suggestion">${resourceLabel(resource)}<button type="button" data-add-result="${index}" class="primary">Add</button></div>`).join("");
   target.classList.toggle("hidden", unique.length === 0);
   target.querySelectorAll("[data-add-result]").forEach((button) => { button.onclick = () => addResource(unique[Number(button.dataset.addResult)]); });
+}
+
+function setSearching(searching) {
+  const spinner = document.getElementById("searchSpinner");
+  const input = document.getElementById("resourceSearch");
+  if (!spinner || !input) return;
+  spinner.classList.toggle("hidden", !searching);
+  input.setAttribute("aria-busy", String(searching));
 }
 
 function searchResources(query) {
   const kind = entityKind();
   const local = state.resources.filter((resource) => resource.kind === kind && `${resource.label} ${resource.detail} ${resource.id}`.toLowerCase().includes(query));
   renderSuggestions(local);
-  if (entity !== "people") return;
+  if (entity !== "people") { setSearching(false); return; }
   const sequence = ++searchSequence;
   clearTimeout(searchTimer);
+  setSearching(true);
   searchTimer = setTimeout(async () => {
     try {
       const result = await api(`/api/people?q=${encodeURIComponent(query)}`);
@@ -247,6 +266,8 @@ function searchResources(query) {
       renderSuggestions(result.people.map((person) => ({ kind: "person", id: person.id, label: person.displayName || person.email || person.id, detail: person.email || person.mri || person.id })));
     } catch (error) {
       if (sequence === searchSequence) document.getElementById("message").innerHTML = `<div class="banner error">${esc(error.message)}</div>`;
+    } finally {
+      if (sequence === searchSequence) setSearching(false);
     }
   }, 250);
 }
@@ -289,7 +310,7 @@ function renderEditor() {
   }
   const locked = Boolean(selectedRecord?.locked);
   document.getElementById("content").innerHTML = `${selectedRecord?.lockReason ? `<div class="banner">${esc(selectedRecord.lockReason)}</div>` : ""}
-    <section class="section"><h3>Message destinations</h3><p class="section-lead">Choose the people, group chats, and channels this policy may read from or post to.</p><div class="tabs"><button type="button" data-entity="people" aria-selected="true">People</button><button type="button" data-entity="chats" aria-selected="false">Group chats</button><button type="button" data-entity="channels" aria-selected="false">Channels</button></div><div class="search"><input id="resourceSearch" type="text" autocomplete="off" placeholder="Search people by name or email"><div id="searchResults" class="suggestions hidden"></div></div><div class="table-wrap"><table><thead><tr><th>Destination</th><th>Read</th><th>Post</th><th></th></tr></thead><tbody id="resourceRows"></tbody></table></div></section>
+    <section class="section"><h3>Message destinations</h3><p class="section-lead">Choose the people, group chats, and channels this policy may read from or post to.</p><div class="tabs"><button type="button" data-entity="people" aria-selected="true">People</button><button type="button" data-entity="chats" aria-selected="false">Group chats</button><button type="button" data-entity="channels" aria-selected="false">Channels</button></div><div class="search"><div class="search-control"><input id="resourceSearch" type="text" autocomplete="off" placeholder="Search people by name or email" aria-describedby="searchStatus"><span id="searchSpinner" class="spinner hidden" aria-hidden="true"></span><span id="searchStatus" class="visually-hidden" role="status">Searching the directory</span></div><div id="searchResults" class="suggestions hidden"></div></div><div class="table-wrap"><table><thead><tr><th>Destination</th><th>Read</th><th>Post</th><th></th></tr></thead><tbody id="resourceRows"></tbody></table></div></section>
     <section class="section"><h3>Allowed identities</h3><p class="section-lead">After this policy applies, only identities on this whitelist may be used in the workspace.</p><div class="table-wrap"><table><thead><tr><th>Allowed identity</th><th></th></tr></thead><tbody id="identityRows"></tbody></table></div></section>
     <section class="section"><h3>Features</h3><label class="token"><input id="rawTokens" type="checkbox" ${draft.allow.rawTokenExport ? "checked" : ""}><span><strong>Allow raw token export</strong><span class="detail">Keep disabled unless an external tool genuinely requires a complete bearer token.</span></span></label></section>
     <section class="section"><h3>Applicability</h3><p class="section-lead">The matching paths determine whether this policy applies to the current workspace.</p><textarea id="subjects" class="paths" rows="3">${esc(draft.subject.paths.join("\n"))}</textarea></section>
@@ -303,12 +324,21 @@ function renderEditor() {
       document.getElementById("resourceSearch").value = "";
       document.getElementById("resourceSearch").placeholder = entity === "people" ? "Search people by name or email" : entity === "chats" ? "Search group chats or participants" : "Search channels or teams";
       document.getElementById("searchResults").classList.add("hidden");
+      searchSequence += 1;
+      clearTimeout(searchTimer);
+      setSearching(false);
       renderRuleRows();
     };
   });
   document.getElementById("resourceSearch").oninput = (event) => {
     const query = event.target.value.trim().toLowerCase();
-    if (query.length < 2) { document.getElementById("searchResults").classList.add("hidden"); return; }
+    if (query.length < 2) {
+      searchSequence += 1;
+      clearTimeout(searchTimer);
+      setSearching(false);
+      document.getElementById("searchResults").classList.add("hidden");
+      return;
+    }
     searchResources(query);
   };
   document.getElementById("rawTokens").onchange = (event) => { draft.allow.rawTokenExport = event.target.checked; markDirty(); };

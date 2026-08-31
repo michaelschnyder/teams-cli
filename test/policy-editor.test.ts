@@ -54,6 +54,11 @@ test("secures the editor session and atomically saves a draft", async () => {
     assert.match(pageHtml, /data-copy-path/);
     assert.match(pageHtml, /\/api\/people\?q=/);
     assert.match(pageHtml, /\/api\/delete/);
+    assert.match(pageHtml, /id="policyTableWrap"/);
+    assert.doesNotMatch(pageHtml, /policyTableWrap"\)\.classList\.toggle\("hidden"/);
+    assert.match(pageHtml, /id="searchSpinner"/);
+    assert.match(pageHtml, /class="resource-icon/);
+    assert.match(pageHtml, /aria-busy/);
     assert.match(pageHtml, /id="closeEditor"/);
     assert.doesNotMatch(pageHtml, /skypetoken|accessToken/);
 
