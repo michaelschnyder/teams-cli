@@ -19,10 +19,10 @@ teams-cli --version
 ### 2. Sign in
 
 ```bash
-teams-cli auth login
+teams-cli login
 ```
 
-The login opens a dedicated Microsoft Edge profile by default, or a dedicated Google Chrome profile when selected. It does not reuse your normal browser profile or its signed-in session. The CLI discovers the Teams tenant and user, then saves them in the implicit `default` profile. Most users never need to provide a tenant ID or create a named profile.
+`teams-cli login` is the convenient alias for `teams-cli auth login`. It opens a dedicated Microsoft Edge profile by default, or a dedicated Google Chrome profile when selected. It does not reuse your normal browser profile or its signed-in session. The CLI discovers the Teams tenant and user, then saves them in the implicit `default` profile. Most users never need to provide a tenant ID or create a named profile.
 
 ### 3. Install the agent skill
 
@@ -60,7 +60,7 @@ Or use the CLI directly:
 ```bash
 teams-cli auth whoami
 teams-cli person search "Alice" --json
-teams-cli chat list --json
+teams-cli chat search "Alice" --json
 teams-cli channel list --json
 teams-cli message list --chat CHAT_ID --json
 teams-cli message send --person alice@example.com --body "Hello"
@@ -80,7 +80,7 @@ flowchart LR
 
 ### Default session
 
-`teams-cli auth login` discovers and records the verified tenant, user, and browser in the `default` profile. Named profiles and explicit `--tenant` or `--user` flags are optional tools for people who deliberately maintain more than one identity. Profiles select configuration; they are not permission boundaries. See [authentication](docs/use/authentication.md) and [optional profiles](docs/use/profiles.md).
+`teams-cli login` discovers and records the verified tenant, user, and browser in the `default` profile. The longer `teams-cli auth login` form remains available. Named profiles and explicit `--tenant` or `--user` flags are optional tools for people who deliberately maintain more than one identity. Profiles select configuration; they are not permission boundaries. See [authentication](docs/use/authentication.md) and [optional profiles](docs/use/profiles.md).
 
 ### Agent skill
 
@@ -100,13 +100,14 @@ Person, chat, channel, and message commands support `--json`. JSON payloads stay
 
 | Command | Purpose | Examples and details |
 | --- | --- | --- |
+| `login` | Sign in using the default session; alias for `auth login` | [Authentication](docs/use/authentication.md) |
 | `version` | Show the installed version or upgrade it | [Installation and upgrades](docs/use/installation.md) |
 | `skills` | List, locate, install, and refresh the packaged agent skill | [Agent skill installation](docs/use/agent-skills.md) |
 | `auth` | Login, refresh, inspect, export tokens, or logout | [Authentication](docs/use/authentication.md) |
 | `profile` | Manage optional named identity selectors | [Profiles](docs/use/profiles.md) |
 | `policy` | Create, inspect, check, activate, and edit safeguards | [Policies](docs/use/policies.md) |
 | `person` | Search people, inspect profiles, and retrieve images | [Command examples](docs/use/commands.md) |
-| `chat` | List and inspect chats | [Command examples](docs/use/commands.md) |
+| `chat` | Search, explicitly enumerate, and inspect chats | [Command examples](docs/use/commands.md) |
 | `channel` | List and inspect teams and channels | [Command examples](docs/use/commands.md) |
 | `message` | List, get, and send messages | [Command examples](docs/use/commands.md) |
 

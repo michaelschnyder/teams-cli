@@ -5,11 +5,11 @@
 Most users need only:
 
 ```bash
-teams-cli auth login
+teams-cli login
 teams-cli auth whoami
 ```
 
-Login opens a dedicated Microsoft Edge profile by default, or a dedicated Google Chrome profile when selected. This isolated browser profile does not reuse the normal browser profile or its signed-in session. Microsoft handles account selection and any required MFA, and the CLI discovers the verified tenant and user from the returned tokens. The CLI stores that identity and browser in the implicit `default` profile, so later commands need no tenant or profile arguments.
+`teams-cli login` is a top-level alias for `teams-cli auth login`; it does not duplicate the other authentication commands at the top level. Login opens a dedicated Microsoft Edge profile by default, or a dedicated Google Chrome profile when selected. This isolated browser profile does not reuse the normal browser profile or its signed-in session. Microsoft handles account selection and any required MFA, and the CLI discovers the verified tenant and user from the returned tokens. The CLI stores that identity and browser in the implicit `default` profile, so later commands need no tenant or profile arguments.
 
 `auth whoami` validates the saved session and displays the user, tenant, token audiences, and expiry times. Like other authenticated commands, it may offer to open the policy editor when no active policy applies to the current workspace.
 
@@ -24,7 +24,7 @@ teams-cli auth refresh
 teams-cli auth refresh access
 ```
 
-If a silent refresh requires account selection, MFA, or another interaction, the CLI asks whether it should reopen the dedicated browser profile. If you confirm, it completes sign-in and continues the command. In a non-interactive environment, or when you decline, it stops and tells you to run `teams-cli auth login`. It does not bypass MFA or conditional access.
+If a silent refresh requires account selection, MFA, or another interaction, the CLI asks whether it should reopen the dedicated browser profile. If you confirm, it completes sign-in and continues the command. In a non-interactive environment, or when you decline, it stops and tells you to run `teams-cli login`. It does not bypass MFA or conditional access.
 
 Logout removes the selected identity's local Teams tokens and dedicated browser profiles:
 
@@ -52,7 +52,7 @@ Selecting another browser with `--browser edge|chrome` does not invalidate exist
 Automated login requires a username and an absolute executable path that prints the password to stdout:
 
 ```bash
-teams-cli auth login \
+teams-cli login \
   --username alice@example.com \
   --password-command /absolute/path/to/password-helper \
   --headless

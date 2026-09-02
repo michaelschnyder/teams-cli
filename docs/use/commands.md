@@ -1,6 +1,6 @@
 # Command examples
 
-The default session created by `teams-cli auth login` is used automatically. The examples on this page do not require a tenant ID or named profile.
+The default session created by `teams-cli login` or `teams-cli auth login` is used automatically. The examples on this page do not require a tenant ID or named profile.
 
 ## Verify the active identity
 
@@ -15,13 +15,32 @@ Verify the identity before reading sensitive content or sending a message. Named
 ```bash
 teams-cli person search "Alice" --json
 teams-cli person get alice@example.com --json
-teams-cli chat list --json
-teams-cli chat get CHAT_ID --json
+teams-cli chat search "Alice" --json
+teams-cli chat get CHAT_ID --all --json
 teams-cli channel list --json
 teams-cli channel get CHANNEL_ID --json
 ```
 
 Discover current identifiers rather than copying stale IDs from logs or old output. Person, chat, and channel metadata is not message content, but it can still be sensitive.
+
+Use `chat search` before `chat list`. Search asks the server for up to 25 ranked people and 25 ranked chats and does not download the complete chat collection. Direct chats that already exist are resolved from matching people, so a participant name or email is usually the best query.
+
+The Teams chat-list endpoint does not provide a reliable page-size limit. In observed large tenants it returned thousands of chats in the first response with no continuation cursor. Both `chat list` and `chat get` use that collection endpoint, so the interactive CLI asks before the initial request. Scripts and agents must acknowledge that cost explicitly with `--all`; the flag acknowledges the possible full response rather than changing what the server returns:
+
+```bash
+teams-cli chat list --all --json
+teams-cli chat get CHAT_ID --all --json
+```
+
+When Teams does provide a continuation cursor, the result includes `page.nextCursor`. Fetch that server-provided next page without repeating `--all`:
+
+```bash
+teams-cli chat list --cursor OPAQUE_CURSOR --json
+```
+
+The CLI does not simulate local pages or truncate the server response, because doing so would still download the entire collection and could make the result misleading.
+
+Message operations that already have a chat ID do not need you to run `chat list` first. Message reads and sends classify one-to-one chat IDs directly for policy checks and do not silently enumerate the chat collection.
 
 ## Read messages
 
@@ -86,7 +105,7 @@ teams-cli person image alice@example.com --base64
 ```bash
 teams-cli --help
 teams-cli message --help
-teams-cli --debug chat list --json
+teams-cli --debug chat search "Project Phoenix" --json
 ```
 
 Debug output is sanitized and written to stderr. It does not include headers, tokens, cookies, query values, request bodies, or conversation and message identifiers.

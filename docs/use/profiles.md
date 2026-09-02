@@ -1,15 +1,15 @@
 # Optional profiles
 
-Most users do not need to create or select a named profile. Running `teams-cli auth login` without `--profile` saves the verified tenant, user, username, and browser in the implicit profile named `default`. Later commands use it automatically.
+Most users do not need to create or select a named profile. Running `teams-cli login` without `--profile` saves the verified tenant, user, username, and browser in the implicit profile named `default`. Later commands use it automatically. `teams-cli auth login` is the equivalent grouped form.
 
 Profiles are useful when you deliberately maintain several Teams identities or browser choices. They are configuration selectors, not token stores or permission boundaries.
 
 ## The default profile
 
 ```bash
-teams-cli auth login
+teams-cli login
 teams-cli auth whoami
-teams-cli chat list --json
+teams-cli chat search "Project Phoenix" --json
 ```
 
 The first command creates or updates `default`. No separate `profile save` command is needed.
@@ -33,7 +33,7 @@ Use a named profile when you want another stable selection:
 ```bash
 teams-cli --profile test-alice auth login
 teams-cli --profile test-alice auth whoami
-teams-cli --profile test-alice chat list --json
+teams-cli --profile test-alice chat search "Project Phoenix" --json
 ```
 
 Login creates or updates the selected profile after Microsoft returns and the CLI verifies the identity. You may supply `--tenant` or `--user` during login when the expected identity must be constrained:

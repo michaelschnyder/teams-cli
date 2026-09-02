@@ -18,12 +18,14 @@ test("loads packaged skills and resolves broad platform aliases", async () => {
   assert.deepEqual(skills.map(({ name }) => name), ["teams-cli"]);
   assert.equal(skills[0]?.description.includes("\n"), false);
   assert.ok((skills[0]?.description.length ?? Number.POSITIVE_INFINITY) < 140);
-  const firstUse = skills[0]?.content.indexOf("teams-cli auth login") ?? -1;
+  const firstUse = skills[0]?.content.indexOf("teams-cli login") ?? -1;
   const verification = skills[0]?.content.indexOf("teams-cli auth whoami") ?? -1;
   assert.ok(firstUse >= 0 && verification > firstUse);
   assert.match(skills[0]?.content ?? "", /ordinary flow does not need a named profile, tenant ID, or user ID/);
   assert.match(skills[0]?.content ?? "", /message send --person alice@example\.com/);
   assert.match(skills[0]?.content ?? "", /policy preflight is optional/);
+  assert.match(skills[0]?.content ?? "", /Always try `chat search <query>` before enumerating chats/);
+  assert.match(skills[0]?.content ?? "", /chat list --all --json/);
   assert.equal(lookupSkillPlatform("copilot")?.name, "github-copilot");
   assert.equal(lookupSkillPlatform("gemini")?.name, "gemini-cli");
 });

@@ -66,6 +66,7 @@ import {
   listChats,
   listMessages,
   resolveDirectMessageTarget,
+  searchChats,
   sendMessage,
   searchPeople,
   type ChannelList,
@@ -88,6 +89,7 @@ import { CLI_VERSION } from "./version.js";
 
 type TokenTarget = "all" | "access" | "skype" | "chat" | "search";
 type GlobalOptions = RuntimeOverrides & { debug?: boolean };
+type LoginCommandOptions = { username?: string; passwordCommand?: string; headless?: boolean };
 type ConfirmPrompt = (question: string) => Promise<boolean>;
 type LoginImplementation = typeof login;
 
@@ -141,6 +143,16 @@ async function terminalConfirmation(question: string): Promise<boolean> {
 
 function browserLabel(context: RuntimeContext): string {
   return context.browser === "edge" ? "Microsoft Edge" : "Google Chrome";
+}
+
+async function requireChatCollectionConfirmation(
+  confirmed: boolean | undefined,
+  confirm: ConfirmPrompt,
+): Promise<void> {
+  if (confirmed || await confirm(
+    "Teams does not offer a reliable page limit and may return your complete chat history. Enumerate all chats?",
+  )) return;
+  throw new Error("Chat collection request cancelled. Use `teams-cli chat search <query>` first, or pass `--all` to allow a potentially complete response.");
 }
 
 async function loginForRuntime(
@@ -209,7 +221,7 @@ async function authorizedRuntime(
       const message = error instanceof Error ? error.message : String(error);
       if (!/^(?:Not logged in|Stored Teams session)/.test(message)) throw error;
       if (!await interactiveAuth.confirm(
-        `${message.replace(/\s+(?:Run \`teams-cli auth login\`\.?|Log in again\.?)$/, "")} Open a dedicated ${browserLabel(context)} profile to sign in?`,
+        `${message.replace(/\s+(?:Run \`teams-cli (?:auth )?login\`\.?|Log in again\.?)$/, "")} Open a dedicated ${browserLabel(context)} profile to sign in?`,
       )) throw error;
       const session = await loginForRuntime(paths, context, policies, reportPolicyWarnings, interactiveAuth.login);
       identity = { tenantId: session.tenantId, userId: session.userId };
@@ -259,7 +271,7 @@ async function recoverInteractiveLogin(
   if (!await interactiveAuth.confirm(
     `${error.message} Open the dedicated ${browserLabel(runtime.context)} profile to continue?`,
   )) {
-    throw new Error(`${error.message} Run \`teams-cli auth login\` to continue.`);
+    throw new Error(`${error.message} Run \`teams-cli login\` to continue.`);
   }
   const policies = await resolvePolicies(paths, subjectStart);
   await loginForRuntime(
@@ -584,19 +596,18 @@ export function selectedSendTarget(options: SendTargetOptions): MessageTarget | 
   return options.person ?? selectedTarget(options);
 }
 
-async function resolvePolicyMessageTarget(
-  session: StoredSession,
+function resolvePolicyMessageTarget(
   identity: Identity,
   target: MessageTarget,
-): Promise<MessageTarget> {
-  if (target.kind === "channel") return target;
-  const { chat } = await getChat(session, target.id);
-  if (!chat.oneOnOne) return { ...target, category: "group" };
-  const personIds = [...new Set(chat.participants.flatMap((participant) =>
-    [participant.objectId, participant.id]
-      .filter((value): value is string => Boolean(value))
-      .flatMap((value) => value.startsWith("8:orgid:") ? [value, value.slice("8:orgid:".length)] : [value])
-      .filter((value) => value !== identity.userId && value !== `8:orgid:${identity.userId}`)))];
+): MessageTarget {
+  if (target.kind === "channel" || target.category) return target;
+  const encodedPeople = /^19:([^_@]+)_([^@]+)@unq\.gbl\.spaces$/i.exec(target.id)?.slice(1);
+  if (!encodedPeople) return { ...target, category: "group" };
+  const personIds = [...new Set(encodedPeople.flatMap((value) => {
+    const decoded = decodeURIComponent(value);
+    const objectId = decoded.startsWith("8:orgid:") ? decoded.slice("8:orgid:".length) : decoded;
+    return objectId === identity.userId ? [] : [decoded, objectId, `8:orgid:${objectId}`];
+  }))];
   return { ...target, category: "person", personIds };
 }
 
@@ -647,46 +658,48 @@ export function createProgram(options: ProgramOptions = {}): Command {
 
   registerVersionCommand(program);
   registerSkillsCommand(program, options.storageRoot);
-  const auth = program.command("auth").description("Manage Microsoft Teams authentication");
-
-  auth
-    .command("login")
+  const runLogin = async (loginOptions: LoginCommandOptions) => {
+    const context = await runtimeContext(program, paths);
+    const policies = await resolvePolicies(paths, subjectPath);
+    const reportPolicyWarnings = policyWarningReporter();
+    reportPolicyWarnings(policyStatusWarnings(policies));
+    if (context.tenantId && context.userId) {
+      reportPolicyWarnings(requirePolicyIdentity(policies, {
+        tenantId: context.tenantId,
+        userId: context.userId,
+      }));
+    }
+    const selectedUsername = loginOptions.username ?? context.username;
+    process.stderr.write(`Opening a dedicated ${browserLabel(context)} profile for Teams sign-in…\n`);
+    const session = await runWithStatus(program, false, "Signing in…", () => interactiveAuth.login(paths, {
+      browser: context.browser,
+      ...(context.tenantId ? { tenant: context.tenantId } : {}),
+      ...(context.userId ? { user: context.userId } : {}),
+      ...(selectedUsername ? { username: selectedUsername } : {}),
+      ...(loginOptions.passwordCommand ? { passwordCommand: loginOptions.passwordCommand } : {}),
+      ...(loginOptions.headless ? { headless: true } : {}),
+      authorizeIdentity: async (identity) => {
+        reportPolicyWarnings(requirePolicyIdentity(policies, identity));
+      },
+    }));
+    await saveProfile(paths, context.profileName, {
+      tenantId: session.tenantId,
+      userId: session.userId,
+      ...(session.username ? { username: session.username } : selectedUsername ? { username: selectedUsername } : {}),
+      browser: context.browser,
+    });
+    process.stdout.write(`Logged in to tenant ${session.tenantId}.\n`);
+  };
+  const configureLoginCommand = (command: Command): Command => command
     .description("Sign in with Microsoft and save the Teams session")
     .option("--username <login-name>", "Microsoft login name used by automated login")
     .option("--password-command <absolute-path>", "Executable that writes the password to stdout")
     .option("--headless", "Run automated login without a visible browser")
-    .action(async (loginOptions: { username?: string; passwordCommand?: string; headless?: boolean }) => {
-      const context = await runtimeContext(program, paths);
-      const policies = await resolvePolicies(paths, subjectPath);
-      const reportPolicyWarnings = policyWarningReporter();
-      reportPolicyWarnings(policyStatusWarnings(policies));
-      if (context.tenantId && context.userId) {
-        reportPolicyWarnings(requirePolicyIdentity(policies, {
-          tenantId: context.tenantId,
-          userId: context.userId,
-        }));
-      }
-      const selectedUsername = loginOptions.username ?? context.username;
-      process.stderr.write(`Opening a dedicated ${browserLabel(context)} profile for Teams sign-in…\n`);
-      const session = await runWithStatus(program, false, "Signing in…", () => interactiveAuth.login(paths, {
-        browser: context.browser,
-        ...(context.tenantId ? { tenant: context.tenantId } : {}),
-        ...(context.userId ? { user: context.userId } : {}),
-        ...(selectedUsername ? { username: selectedUsername } : {}),
-        ...(loginOptions.passwordCommand ? { passwordCommand: loginOptions.passwordCommand } : {}),
-        ...(loginOptions.headless ? { headless: true } : {}),
-        authorizeIdentity: async (identity) => {
-          reportPolicyWarnings(requirePolicyIdentity(policies, identity));
-        },
-      }));
-      await saveProfile(paths, context.profileName, {
-        tenantId: session.tenantId,
-        userId: session.userId,
-        ...(session.username ? { username: session.username } : selectedUsername ? { username: selectedUsername } : {}),
-        browser: context.browser,
-      });
-      process.stdout.write(`Logged in to tenant ${session.tenantId}.\n`);
-    });
+    .action(runLogin);
+
+  configureLoginCommand(program.command("login"));
+  const auth = program.command("auth").description("Manage Microsoft Teams authentication");
+  configureLoginCommand(auth.command("login"));
 
   auth
     .command("refresh")
@@ -937,21 +950,35 @@ export function createProgram(options: ProgramOptions = {}): Command {
 
   const chat = program.command("chat").description("Read Microsoft Teams chats");
   chat
-    .command("list")
-    .description("List the server-provided chat collection and participants")
-    .option("--cursor <cursor>", "Opaque cursor returned by the previous page")
+    .command("search")
+    .description("Search server-ranked chats and people without loading the full chat collection")
+    .argument("<query>", "Chat name or participant query")
     .option("--json", "Output stable JSON")
-    .action(async (options: { cursor?: string; json?: boolean }) => {
+    .action(async (query: string, options: { json?: boolean }) => {
+      const result = await runWithStatus(program, options.json ?? false, "Searching chats…", () =>
+        withAuthorizedDataSession(program, paths, subjectPath, ["search", "skype"], (session) => searchChats(session, query), interactiveAuth));
+      writeData(result, renderChats(result), options.json ?? false);
+    });
+  chat
+    .command("list")
+    .description("List the server-provided chat collection and participants; may return every chat")
+    .option("--cursor <cursor>", "Opaque cursor returned by the previous page")
+    .option("--all", "Confirm that the initial request may return the complete chat collection")
+    .option("--json", "Output stable JSON")
+    .action(async (options: { cursor?: string; all?: boolean; json?: boolean }) => {
+      if (!options.cursor) await requireChatCollectionConfirmation(options.all, interactiveAuth.confirm);
       const result = await runWithStatus(program, options.json ?? false, "Loading chats…", () =>
         withAuthorizedDataSession(program, paths, subjectPath, ["chat", "skype"], (session) => listChats(session, options.cursor), interactiveAuth));
       writeData(result, renderChats(result), options.json ?? false);
     });
   chat
     .command("get")
-    .description("Get one chat by ID")
+    .description("Get one chat by ID through the potentially complete chat collection")
     .argument("<chat-id>", "Teams chat ID")
+    .option("--all", "Confirm that the lookup may return the complete chat collection")
     .option("--json", "Output stable JSON")
-    .action(async (chatId: string, options: { json?: boolean }) => {
+    .action(async (chatId: string, options: { all?: boolean; json?: boolean }) => {
+      await requireChatCollectionConfirmation(options.all, interactiveAuth.confirm);
       const result = await runWithStatus(program, options.json ?? false, "Loading chat…", () =>
         withAuthorizedDataSession(program, paths, subjectPath, ["chat", "skype"], (session) => getChat(session, chatId), interactiveAuth));
       writeData(result, renderChatResult(result), options.json ?? false);
@@ -992,7 +1019,7 @@ export function createProgram(options: ProgramOptions = {}): Command {
       const target = selectedTarget(options);
       const result = await runWithStatus(program, options.json ?? false, "Fetching messages…", () =>
         withAuthorizedDataSession(program, paths, subjectPath, ["chat", "skype"], async (session, runtime) => {
-          const policyTarget = await resolvePolicyMessageTarget(session, runtime.identity, target);
+          const policyTarget = resolvePolicyMessageTarget(runtime.identity, target);
           return listMessages(session, target, options, undefined, async () => {
             const current = await resolvePolicies(paths, subjectPath);
             runtime.reportPolicyWarnings(policyStatusWarnings(current));
@@ -1010,7 +1037,7 @@ export function createProgram(options: ProgramOptions = {}): Command {
       const target = selectedTarget(options);
       const result = await runWithStatus(program, options.json ?? false, "Fetching message…", () =>
         withAuthorizedDataSession(program, paths, subjectPath, ["chat", "skype"], async (session, runtime) => {
-          const policyTarget = await resolvePolicyMessageTarget(session, runtime.identity, target);
+          const policyTarget = resolvePolicyMessageTarget(runtime.identity, target);
           return getMessage(session, target, messageId, undefined, async () => {
             const current = await resolvePolicies(paths, subjectPath);
             runtime.reportPolicyWarnings(policyStatusWarnings(current));
@@ -1051,7 +1078,7 @@ export function createProgram(options: ProgramOptions = {}): Command {
             policyTarget = direct.target;
           } else {
             target = selection;
-            policyTarget = await resolvePolicyMessageTarget(session, runtime.identity, target);
+            policyTarget = resolvePolicyMessageTarget(runtime.identity, target);
           }
           runtime.reportPolicyWarnings(requireMessageSend(runtime.policies, runtime.identity, policyTarget));
           if (confirmation) {

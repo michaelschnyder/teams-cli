@@ -18,6 +18,7 @@ test("inactive policies audit while active policy denials make zero message POST
   const subjectPath = await mkdtemp(join(tmpdir(), "teams-cli-subject-"));
   const otherSubject = await mkdtemp(join(tmpdir(), "teams-cli-other-subject-"));
   let requests = 0;
+  let discoveryRequests = 0;
   const server = createServer((_request, response) => {
     requests += 1;
     response.writeHead(200, { "content-type": "application/json" });
@@ -27,6 +28,7 @@ test("inactive policies audit while active policy denials make zero message POST
   globalThis.fetch = (input, init) => {
     const url = new URL(input instanceof Request ? input.url : input);
     if (url.hostname === "teams.microsoft.com" && url.pathname.startsWith("/api/csa/api/v1/teams/users/me")) {
+      discoveryRequests += 1;
       return Promise.resolve(new Response(JSON.stringify({
         chats: ["audit-chat", "denied-chat", "allowed-chat", "unrestricted-chat"].map((id) => ({ id, title: id, isOneOnOne: false, members: [] })),
         users: [],
@@ -175,6 +177,7 @@ test("inactive policies audit while active policy denials make zero message POST
       /Policy denied operation/,
     );
     assert.equal(requests, 3);
+    assert.equal(discoveryRequests, 0);
   } finally {
     globalThis.fetch = originalFetch;
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));

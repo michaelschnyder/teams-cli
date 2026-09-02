@@ -10,6 +10,7 @@ import {
   listChats,
   listMessages,
   resolveDirectMessageTarget,
+  searchChats,
   searchPeople,
 } from "../src/teams-client.js";
 import type { StoredSession } from "../src/storage.js";
@@ -52,6 +53,37 @@ test("normalizes chat and channel discovery from a mocked API", async () => {
     team: { id: "team-1", name: "Testing" },
   });
   assert.equal((await getChannel(session, "channel-1", discoveryFetch)).channel.team.name, "Testing");
+});
+
+test("follows server-provided chat paging without inventing a page size", async () => {
+  const requests: Array<{ url: URL; headers: Record<string, string> }> = [];
+  const first = await listChats(session, undefined, async (input, init) => {
+    requests.push({
+      url: new URL(input.toString()),
+      headers: init?.headers as Record<string, string>,
+    });
+    return Response.json({
+      chats: [{ id: "chat-1", title: "First" }],
+      metadata: { hasMoreChats: true, syncToken: "server-sync-token" },
+    });
+  });
+  assert.ok(first.page.nextCursor);
+
+  const second = await listChats(session, first.page.nextCursor as string, async (input, init) => {
+    requests.push({
+      url: new URL(input.toString()),
+      headers: init?.headers as Record<string, string>,
+    });
+    return Response.json({
+      chats: [{ id: "chat-2", title: "Second" }],
+      metadata: { hasMoreChats: false },
+    });
+  });
+  assert.deepEqual(second.chats.map(({ id }) => id), ["chat-2"]);
+  assert.equal(second.page.nextCursor, null);
+  assert.equal(requests[1]?.url.pathname.endsWith("/updates"), true);
+  assert.equal(requests[1]?.headers["x-ms-synctoken"], "server-sync-token");
+  assert.equal(requests.some(({ url }) => url.searchParams.has("pageSize")), false);
 });
 
 test("lists and gets messages for chat and channel targets from a mocked API", async () => {
@@ -112,6 +144,51 @@ test("searches people with the search token and preserves server ranking", async
   ]);
   assert.equal(body.EntityRequests[0]?.Query.QueryString, "engineer");
   await assert.rejects(() => searchPeople(session, "  ", searchFetch), /must not be empty/);
+});
+
+test("searches chats without loading the complete chat collection", async () => {
+  const requests: Array<{ url: URL; init: RequestInit | undefined }> = [];
+  const result = await searchChats(session, "  Ada  ", async (input, init) => {
+    const url = new URL(input.toString());
+    requests.push({ url, init });
+    if (url.pathname === "/search/api/v1/suggestions") {
+      return Response.json({
+        Groups: [
+          { Type: "People", Suggestions: [{
+            MRI: "8:orgid:person-1",
+            ExternalDirectoryObjectId: "person-1",
+            DisplayName: "Ada Lovelace",
+          }] },
+          { Type: "Chat", Suggestions: [{
+            ThreadId: "group-chat",
+            Name: "Ada working group",
+            MatchingMembers: [{ mri: "8:orgid:person-2", displayName: "Ada Byron" }],
+            ChatMembers: [],
+          }] },
+        ],
+      });
+    }
+    if (decodeURIComponent(url.pathname).includes("19:person-1_user-id@unq.gbl.spaces")) {
+      return Response.json({ lastMessage: { composetime: "2026-08-18T00:00:00Z" } });
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  });
+
+  assert.equal(result.query, "Ada");
+  assert.deepEqual(result.chats.map((chat) => chat.id), [
+    "19:person-1_user-id@unq.gbl.spaces",
+    "group-chat",
+  ]);
+  assert.equal(result.chats[0]?.oneOnOne, true);
+  assert.equal(result.chats[1]?.participants[0]?.displayName, "Ada Byron");
+  const body = JSON.parse(String(requests[0]?.init?.body)) as {
+    EntityRequests: Array<{ EntityType: string; Size: number }>;
+  };
+  assert.deepEqual(body.EntityRequests.map(({ EntityType, Size }) => ({ EntityType, Size })), [
+    { EntityType: "People", Size: 25 },
+    { EntityType: "Chat", Size: 25 },
+  ]);
+  assert.equal(requests.some(({ url }) => url.pathname.includes("/api/csa/")), false);
 });
 
 test("gets a detailed person by email or MRI through middle tier", async () => {

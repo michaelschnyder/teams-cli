@@ -18,11 +18,11 @@ Act through the CLI instead of calling its underlying APIs directly. Know which 
 The ordinary flow does not need a named profile, tenant ID, or user ID:
 
 ```bash
-teams-cli auth login
+teams-cli login
 teams-cli auth whoami
 ```
 
-On first use, run `auth login`, then use `auth whoami` to verify the signed-in tenant and user. Login saves the verified identity and browser in the implicit `default` profile. Use `--profile <name>` only when the user deliberately maintains more than one identity; profiles are configuration defaults, not security boundaries.
+On first use, run the top-level `login` command, then use `auth whoami` to verify the signed-in tenant and user. `login` is an alias for `auth login`; the other authentication operations remain under `auth`. Login saves the verified identity and browser in the implicit `default` profile. Use `--profile <name>` only when the user deliberately maintains more than one identity; profiles are configuration defaults, not security boundaries.
 
 Automated login requires `--username` and an absolute `--password-command` executable that prints the password to stdout. Never ask the user to weaken MFA or conditional access, and never store a password in configuration or a command line.
 
@@ -33,10 +33,13 @@ Resolve display names to current IDs before reading or sending. A first message 
 ```bash
 teams-cli person search "Alice" --json
 teams-cli person get alice@example.com --json
-teams-cli chat list --json
+teams-cli chat search "Alice" --json
 teams-cli channel list --json
-teams-cli chat get <chat-id> --json
 ```
+
+Always try `chat search <query>` before enumerating chats. The server-backed search is bounded to 25 ranked people and 25 ranked chats, which reduces latency and agent context. The collection endpoint used by `chat list` and `chat get` often returns every chat and offers no reliable page size. Use `chat list --all --json` or `chat get <chat-id> --all --json` only when the user actually needs that lookup and has accepted the possible full response. If a list result contains `page.nextCursor`, pass it back with `chat list --cursor <cursor> --json`; a cursor request does not need `--all`.
+
+When the user already supplied a chat ID for a message operation, use it directly. Do not enumerate chats first; message operations classify direct-chat IDs for policy enforcement without loading the chat collection.
 
 For message operations, pass exactly one of `--chat` or `--channel`; the CLI does not infer the target type from an ID:
 

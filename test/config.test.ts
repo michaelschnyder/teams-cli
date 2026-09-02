@@ -73,6 +73,6 @@ test("removes profile configuration without touching other profiles", async () =
 test("directs an unconfigured first-time user to the default login flow", () => {
   assert.throws(
     () => requireRuntimeIdentity({ profileName: "default", browser: "edge" }),
-    /Run `teams-cli auth login` for the default setup/,
+    /Run `teams-cli login` for the default setup/,
   );
 });

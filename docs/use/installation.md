@@ -98,7 +98,7 @@ This command does not modify a project-local or one-off `npx` installation.
 - `teams-cli: command not found`: check `npm prefix --global` and your `PATH`.
 - Browser launch fails: install Edge or Chrome and select one with `--browser edge|chrome`.
 - Login succeeds but Teams access fails: confirm that the account has a Teams-enabled Microsoft 365 license.
-- Stored identity is rejected: run `teams-cli auth login` again.
+- Stored identity is rejected: run `teams-cli login` again.
 - An agent environment is not detected: pass its name explicitly to `teams-cli skills install`.
 - Use `--debug` for sanitized request method, endpoint, status, duration, and retry diagnostics. Headers, tokens, cookies, query values, and bodies are not logged.
 

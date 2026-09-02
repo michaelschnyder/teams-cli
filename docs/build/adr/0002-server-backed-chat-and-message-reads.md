@@ -40,8 +40,7 @@ Add read-only people, chat, and message commands using the same private services
   `hasMoreChats: false`. Common server paging parameters such as `pageSize`,
   `chatListPageSize`, and `limit` were ignored. Ordering parameters were also ignored,
   and the returned collection was not ordered by last activity. The CLI therefore
-  cannot offer a chat-list limit, pagination, or last-activity ordering through this
-  endpoint without violating the server-only query rule.
+  cannot guarantee a bounded initial chat-list page or last-activity ordering through this endpoint without violating the server-only query rule. The CLI preserves a continuation cursor when the server supplies one, but observed large-tenant initial responses contained the full collection and no cursor. `chat list` therefore requires interactive confirmation or an explicit `--all` for the initial request.
 - Substrate suggestions receives `People` and `Chat` entity requests with a requested
   size of 25 each. Live requests showed that the previous size of five was only a
   client request choice: a `Vlad` query returned all 13 available Chat suggestions
@@ -71,6 +70,8 @@ chat-list limits and last-activity ordering.
 
 Human-readable chat output is a table by default. `--json` returns stable envelopes
 with the same collection order and an optional `page.nextCursor`.
+
+`chat search` is the preferred discovery path. It uses the bounded server-ranked Substrate result described above and avoids downloading the complete CSA collection.
 
 ## Authentication and session protocol
 

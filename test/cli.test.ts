@@ -37,12 +37,12 @@ const session: StoredSession = {
   endpoints: { chatService: "https://emea.ng.msg.teams.microsoft.com" },
 };
 
-test("exposes version, skills, auth, profile, policy, person, chat, channel, and message commands", () => {
+test("exposes login plus the grouped CLI commands", () => {
   const program = createProgram();
   assert.equal(program.version(), CLI_VERSION);
   assert.match(program.options.find((option) => option.long === "--tenant")?.description ?? "", /Optional/);
   assert.match(program.options.find((option) => option.long === "--user")?.description ?? "", /Optional/);
-  assert.deepEqual(program.commands.map((command) => command.name()), ["version", "skills", "auth", "profile", "policy", "person", "chat", "channel", "message"]);
+  assert.deepEqual(program.commands.map((command) => command.name()), ["version", "skills", "login", "auth", "profile", "policy", "person", "chat", "channel", "message"]);
   const command = (name: string) => program.commands.find((candidate) => candidate.name() === name);
   assert.deepEqual(
     command("auth")?.commands.map((child) => child.name()),
@@ -57,11 +57,67 @@ test("exposes version, skills, auth, profile, policy, person, chat, channel, and
   assert.deepEqual(command("person")?.commands.map((child) => child.name()), ["search", "get", "image"]);
   const imageCommand = command("person")?.commands.find((child) => child.name() === "image");
   assert.equal(imageCommand?.options.find((option) => option.long === "--size")?.defaultValue, "max");
-  assert.deepEqual(command("chat")?.commands.map((child) => child.name()), ["list", "get"]);
+  assert.deepEqual(command("chat")?.commands.map((child) => child.name()), ["search", "list", "get"]);
+  assert.ok(command("chat")?.commands.find((child) => child.name() === "list")?.options.some((option) => option.long === "--all"));
   assert.deepEqual(command("channel")?.commands.map((child) => child.name()), ["list", "get"]);
   assert.deepEqual(command("message")?.commands.map((child) => child.name()), ["list", "get", "send"]);
   assert.ok(command("message")?.commands.find((child) => child.name() === "send")?.options.some((option) => option.long === "--person"));
   assert.equal(program.commands.some((command) => command.name() === "chats"), false);
+});
+
+test("top-level login runs the default login flow", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-cli-login-alias-"));
+  const loggedIn: StoredSession = {
+    ...session,
+    tenantId: "alias-tenant",
+    userId: "alias-user",
+    username: "alias@example.test",
+  };
+  let calls = 0;
+  try {
+    await createProgram({
+      storageRoot: root,
+      loginImplementation: async (paths, options) => {
+        calls += 1;
+        assert.equal(options.browser, "edge");
+        await saveSession(paths, loggedIn);
+        return loggedIn;
+      },
+    }).parseAsync(["node", "teams-cli", "login"]);
+    assert.equal(calls, 1);
+    assert.deepEqual((await loadProfiles(storagePaths(root))).profiles.default, {
+      tenantId: "alias-tenant",
+      userId: "alias-user",
+      username: "alias@example.test",
+      browser: "edge",
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("chat collection commands require confirmation before an unpaged full enumeration", async () => {
+  const questions: string[] = [];
+  await assert.rejects(
+    createProgram({
+      confirm: async (question) => {
+        questions.push(question);
+        return false;
+      },
+    }).parseAsync(["node", "teams-cli", "chat", "list", "--json"]),
+    /Use `teams-cli chat search <query>` first, or pass `--all`/,
+  );
+  assert.match(questions[0] ?? "", /complete chat history/);
+  await assert.rejects(
+    createProgram({
+      confirm: async (question) => {
+        questions.push(question);
+        return false;
+      },
+    }).parseAsync(["node", "teams-cli", "chat", "get", "chat-id", "--json"]),
+    /Use `teams-cli chat search <query>` first, or pass `--all`/,
+  );
+  assert.match(questions[1] ?? "", /complete chat history/);
 });
 
 test("activates a named policy and prints filesystem protection guidance", async () => {
