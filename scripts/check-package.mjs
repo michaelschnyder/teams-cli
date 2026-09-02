@@ -22,6 +22,7 @@ try {
     "LICENSE",
     "dist/cli.js",
     "dist/skills/teams-cli/SKILL.md",
+    "docs/use/assets/policy-editor.png",
     "docs/releasing.md",
   ]) {
     if (!paths.includes(required)) throw new Error(`Package is missing ${required}`);

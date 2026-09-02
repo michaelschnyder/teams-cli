@@ -6,12 +6,14 @@ import test from "node:test";
 import {
   describeSession,
   ensureDataSession,
+  InteractiveLoginRequiredError,
   login,
   passwordFromCommand,
   refreshTokens,
   validateSession,
   type AuthDependencies,
 } from "../src/auth.js";
+import { OAuthRedirectError } from "../src/oauth.js";
 import { loadSession, saveSession, storagePaths, type StoredSession } from "../src/storage.js";
 import {
   CHAT_SVC_AGG_RESOURCE,
@@ -74,6 +76,51 @@ test("login stores the verified tenant and user in isolated identity storage", a
     assert.equal(loggedIn.username, "alice@example.test");
     assert.deepEqual(await loadSession(paths, identity), loggedIn);
     assert.equal((await stat(paths.browserProfile(identity, "edge"))).isDirectory(), true);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("first login discovers the tenant and user without explicit identity options", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-cli-login-default-"));
+  try {
+    const paths = storagePaths(root);
+    const identity = { tenantId: "discovered-tenant", userId: "discovered-user" };
+    const access = jwt({
+      tid: identity.tenantId,
+      oid: identity.userId,
+      preferred_username: "alex@example.test",
+      exp: 1_900_000_000,
+    });
+    const supportingToken = jwt({ tid: identity.tenantId, oid: identity.userId, exp: 1_900_000_000 });
+    const dependencies: AuthDependencies = {
+      now: () => new Date("2026-08-28T00:00:00.000Z"),
+      acquireTokens: async (_resources, options) => {
+        assert.equal(options.interactive, true);
+        assert.equal(options.tenant, undefined);
+        assert.equal(options.username, undefined);
+        return {
+          tokens: new Map([
+            [SKYPE_RESOURCE, access],
+            [CHAT_SVC_AGG_RESOURCE, supportingToken],
+            [OUTLOOK_SEARCH_RESOURCE, supportingToken],
+          ]),
+          close: async () => undefined,
+        };
+      },
+      exchangeToken: async () => ({
+        skypeToken: supportingToken,
+        region: "test",
+        endpoints: { chatService: "https://test.invalid" },
+      }),
+    };
+
+    const loggedIn = await login(paths, { browser: "edge" }, dependencies);
+
+    assert.equal(loggedIn.tenantId, identity.tenantId);
+    assert.equal(loggedIn.userId, identity.userId);
+    assert.equal(loggedIn.username, "alex@example.test");
+    assert.deepEqual(await loadSession(paths, identity), loggedIn);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -320,6 +367,40 @@ test("refreshes the access token used by person profile operations", async () =>
     };
     const refreshed = await ensureDataSession(paths, { tenantId: "tenant", userId: "user-id" }, "access", "edge", dependencies);
     assert.equal(refreshed.accessToken.value, freshAccess);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("reports when silent refresh needs an interactive login", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-cli-refresh-interactive-"));
+  try {
+    const paths = storagePaths(root);
+    await saveSession(paths, {
+      version: 3,
+      browser: "edge",
+      tenantId: "tenant",
+      userId: "user-id",
+      savedAt: "2026-08-18T00:00:00.000Z",
+      region: "emea",
+      accessToken: { value: jwt({ tid: "tenant" }), expiresAt: "2026-08-18T00:00:00.000Z" },
+      skypeToken: { value: jwt({ tid: "tenant" }), expiresAt: "2026-08-18T00:00:00.000Z" },
+      chatToken: { value: jwt({ tid: "tenant" }), expiresAt: "2026-08-18T00:00:00.000Z" },
+      searchToken: { value: jwt({ tid: "tenant" }), expiresAt: "2026-08-18T00:00:00.000Z" },
+      endpoints: { chatService: "https://emea.ng.msg.teams.microsoft.com" },
+    });
+    const dependencies: AuthDependencies = {
+      now: () => new Date("2026-08-18T00:00:00.000Z"),
+      acquireTokens: async () => {
+        throw new OAuthRedirectError("interaction_required", "MFA required");
+      },
+      exchangeToken: async () => { throw new Error("unexpected exchange"); },
+    };
+
+    await assert.rejects(
+      refreshTokens(paths, { tenantId: "tenant", userId: "user-id" }, "access", "edge", dependencies),
+      (error: unknown) => error instanceof InteractiveLoginRequiredError && error.code === "interaction_required",
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

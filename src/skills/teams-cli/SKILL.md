@@ -18,25 +18,28 @@ Act through the CLI instead of calling its underlying APIs directly. Know which 
 The ordinary flow does not need a named profile, tenant ID, or user ID:
 
 ```bash
+teams-cli login
 teams-cli auth whoami
-teams-cli auth login
 ```
 
-Run `auth login` when no valid session exists, then use `auth whoami` to verify the signed-in tenant and user. Login saves the verified identity and browser in the implicit `default` profile. Use `--profile <name>` only when the user deliberately maintains more than one identity; profiles are configuration defaults, not security boundaries.
+On first use, run the top-level `login` command, then use `auth whoami` to verify the signed-in tenant and user. `login` is an alias for `auth login`; the other authentication operations remain under `auth`. Login saves the verified identity and browser in the implicit `default` profile. Use `--profile <name>` only when the user deliberately maintains more than one identity; profiles are configuration defaults, not security boundaries.
 
 Automated login requires `--username` and an absolute `--password-command` executable that prints the password to stdout. Never ask the user to weaken MFA or conditional access, and never store a password in configuration or a command line.
 
 ## Discover and read
 
-Resolve display names to current IDs before reading or sending. Prefer `--json` when another command or tool will consume the result:
+Resolve display names to current IDs before reading or sending. A first message to a person can use their email address directly. Prefer `--json` when another command or tool will consume the result:
 
 ```bash
 teams-cli person search "Alice" --json
 teams-cli person get alice@example.com --json
-teams-cli chat list --json
+teams-cli chat search "Alice" --json
 teams-cli channel list --json
-teams-cli chat get <chat-id> --json
 ```
+
+Always try `chat search <query>` before enumerating chats. The server-backed search is bounded to 25 ranked people and 25 ranked chats, which reduces latency and agent context. The collection endpoint used by `chat list` and `chat get` often returns every chat and offers no reliable page size. Use `chat list --all --json` or `chat get <chat-id> --all --json` only when the user actually needs that lookup and has accepted the possible full response. If a list result contains `page.nextCursor`, pass it back with `chat list --cursor <cursor> --json`; a cursor request does not need `--all`.
+
+When the user already supplied a chat ID for a message operation, use it directly. Do not enumerate chats first; message operations classify direct-chat IDs for policy enforcement without loading the chat collection.
 
 For message operations, pass exactly one of `--chat` or `--channel`; the CLI does not infer the target type from an ID:
 
@@ -69,7 +72,7 @@ Policy decisions have these non-obvious semantics:
 - A person allow applies to a one-to-one chat resolved to that person. A group-chat entry never authorizes a channel with the same ID.
 - Every `.yaml` policy file must parse and match its filename. A malformed or misnamed file fails the policy store closed. An active policy or policy directory writable by group or other users also fails closed.
 
-Inspect effective access and preview representative decisions:
+Inspect effective access and, when useful, preview representative decisions:
 
 ```bash
 teams-cli policy list
@@ -83,13 +86,14 @@ Activation has no CLI deactivate or remove command, but it is not irreversible: 
 
 ## Send intentionally
 
-Sending is externally visible and the CLI has no delete or undo command. If the user's requested body or target is ambiguous, clarify it. Otherwise, verify the identity, rediscover the target, and preview the policy decision before sending:
+Sending is externally visible and the CLI has no delete or undo command. If the user's requested body or target is ambiguous, clarify it. Otherwise, verify the identity and rediscover the target. A policy preflight is optional because `message send` always enforces policy immediately before posting:
 
 ```bash
 teams-cli auth whoami
-teams-cli policy check send --chat <chat-id>
-teams-cli message send --chat <chat-id> --body "Hello"
+teams-cli message send --person alice@example.com --body "Hello"
 ```
+
+`--person` resolves a current-tenant member's email address to the two-person chat. An external or unverifiable email recipient requires terminal confirmation; a previously verified Microsoft user object ID can be passed instead. Use `--chat` for an existing group chat and `--channel` for a channel. When a chat or channel ID is known, `policy check send` can optionally preview the current decision.
 
 Use stdin for multiline bodies or text the shell may reinterpret:
 

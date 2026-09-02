@@ -112,7 +112,10 @@ export async function resolveRuntimeContext(
 
 export function requireRuntimeIdentity(context: RuntimeContext): { tenantId: string; userId: string } {
   if (!context.tenantId || !context.userId) {
-    throw new Error("Select a tenant and user with --tenant and --user, or configure a profile");
+    throw new Error(
+      "No Teams identity is configured. Run `teams-cli login` for the default setup, " +
+        "or select a previously configured identity with --profile. Advanced flows can use --tenant and --user",
+    );
   }
   return { tenantId: context.tenantId, userId: context.userId };
 }
