@@ -1,54 +1,87 @@
-# Policies
+# Workspace policies
 
-Policies are optional named YAML files under `~/.teams-cli/policies/`. They limit the effective identity, message reads and posts, and raw-token export for matching subject paths.
+Policies are optional YAML files that help keep agent-assisted Teams work within the intended identity, conversations, and capabilities for a workspace. They can limit message reads, posts, and raw-token export when commands are run through `teams-cli`.
 
-## How policy selection works
+Policies are cooperative safeguards, not a hard security boundary. They are most useful for preventing accidents such as reading the wrong chat, posting to the wrong channel, switching identities, or exporting a bearer token unnecessarily.
 
-The current subject is the canonical absolute path from which the CLI is invoked. This path selector is a convention of this CLI, not an external standard or a strong security identity. Symlinks are resolved before matching.
+## Start with the policy editor
 
-Each policy contains one or more absolute path patterns. Patterns use Node.js glob syntax:
+Run the editor from the workspace the policy should cover:
+
+```bash
+cd /path/to/workspace
+teams-cli policy edit --open
+```
+
+The editor creates a restrictive draft for the current path and its descendants. Select the people, group chats, and channels that may be read or posted to, verify the allowed identity, and leave raw-token export disabled unless it is genuinely required.
+
+![Policy editor showing a restrictive workspace policy draft](assets/policy-editor.png)
+
+Use **Save** to keep the policy inactive while testing it, or **Save and activate** when the selections are ready to enforce. New policies deny message destinations by default, but remain in audit mode until activated.
+
+The editor discovers identity and destination metadata for selection. It cannot read message contents, start chats, or send messages. It runs only for the current CLI invocation; there is no daemon. The printed URL contains a one-time bootstrap token, binds to loopback outside containers, and stops after Save and activate, Close, Ctrl-C, or the final browser connection closes.
+
+In a container the editor binds to all interfaces so an explicitly published port can reach it. Publish the port only onto a trusted localhost interface.
+
+## What happens without a policy
+
+An authenticated command remains allowed when no active policy applies. In an interactive terminal, the CLI offers to open the editor. In a non-interactive session, it prints the command needed to configure least-privilege access.
+
+An inactive policy is evaluated in audit mode:
+
+- The CLI warns that the policy is not enforcing restrictions.
+- A decision that would be denied produces a warning.
+- The operation remains allowed unless another applicable active policy denies it.
+
+This lets you observe representative commands before activation without blocking work.
+
+## How policies match a workspace
+
+The policy subject is the canonical absolute path from which the CLI is invoked. Symlinks are resolved before matching. This path is a useful convention for associating an agent workspace with intended access; it is not an external standard or a strong process identity.
+
+Each policy contains one or more absolute path patterns using Node.js glob syntax:
 
 ```yaml
 subject:
   paths:
     - /Users/me/Workspaces/project
+    - /Users/me/Workspaces/project/**
     - /Users/me/Workspaces/client-*/**
 ```
 
-The paths within one policy are alternatives: matching any one makes that policy applicable. Several policies may apply to the same subject. Every active policy must allow an operation, so adding another active policy can only preserve or narrow access.
+Paths within one policy are alternatives. Matching any path makes that policy applicable. When several active policies apply, every one must allow the identity and operation. Adding another active policy can therefore preserve or narrow access, never widen it.
 
-The CLI validates every `.yaml` file in the policy directory before matching. An unreadable, malformed, misnamed, unsupported, or dangerously writable active policy puts authenticated operations into fail-safe mode across every subject. Files without a `.yaml` extension are not policies and are ignored.
-
-## Inactive and active policies
-
-New policies are inactive. An inactive policy runs in audit mode:
-
-- The CLI warns on stderr that the policy is not enforcing restrictions.
-- The policy is still evaluated.
-- The CLI warns when it would deny the selected identity or operation.
-- The operation remains allowed unless another applicable active policy denies it.
-
-An active policy enforces its identity, allowances, and denials. An empty allow map denies every message destination. The special `"*"` destination grants an action to all chats or all channels. Exact denials override both exact and wildcard allowances. Active policies cannot be deactivated or saved directly through the browser editor. Their fields remain editable so the revised YAML or an atomic elevated shell command can be exported. This makes activation deliberate without claiming that the file itself is immutable on disk.
-
-## Create and refine a policy
-
-Create a named restrictive policy for the current path. Without explicit subjects, initialization adds both the current canonical path and a descendant glob so commands from its subdirectories remain covered:
-
-```bash
-teams-cli --profile personal policy init project-agent
+```mermaid
+flowchart LR
+    command[Command from the current workspace] --> matching[Find matching path policies]
+    matching --> policyA[Active policy A]
+    matching --> policyB[Active policy B]
+    policyA --> intersection[Intersection of allowed access]
+    policyB --> intersection
+    intersection --> decision{Operation allowed by all?}
+    decision -->|Yes| request[Make the Teams request]
+    decision -->|No| stop[Stop before the request]
 ```
 
-Supply several subject patterns by repeating `--subject`:
+The CLI validates every `.yaml` file in `~/.teams-cli/policies/` before matching. An unreadable, malformed, misnamed, or unsupported policy—or an active policy writable by group or other users—puts authenticated operations into fail-safe mode. Files without a `.yaml` extension are ignored.
+
+## Policy file format
+
+Create a named restrictive draft without the browser editor with:
 
 ```bash
-teams-cli --profile personal policy init client-projects \
+teams-cli policy init project-agent
+```
+
+Without explicit subjects, initialization includes the current canonical path and its descendants. Repeat `--subject` for custom absolute patterns:
+
+```bash
+teams-cli policy init client-projects \
   --subject '/Users/me/Workspaces/client-a/**' \
   --subject '/Users/me/Workspaces/client-b/**'
 ```
 
-Subject patterns must be absolute. Quote patterns so the shell does not expand them before the CLI receives them.
-
-The generated policy is restrictive and inactive:
+Quote glob patterns so the shell does not expand them. A generated policy uses the current schema:
 
 ```yaml
 version: 1
@@ -59,21 +92,26 @@ subject:
     - /Users/me/Workspaces/project
     - /Users/me/Workspaces/project/**
 identity:
-  tenantId: tenant-id
-  userId: user-id
+  allowed:
+    - tenantId: tenant-id
+      userId: user-id
 allow:
+  people: {}
   chats: {}
   channels: {}
   rawTokenExport: false
 deny:
+  people: {}
   chats: {}
   channels: {}
 ```
 
-Each destination maps to one or both actions:
+Each destination maps to one or both independent actions:
 
 ```yaml
 allow:
+  people:
+    user-object-id: [read]
   chats:
     "19:example-chat@thread.v2": [read]
     "*": [read]
@@ -81,31 +119,20 @@ allow:
     "19:example-channel@thread.tacv2": [read, post]
   rawTokenExport: false
 deny:
+  people: {}
   chats:
     "19:sensitive-chat@thread.v2": [read, post]
   channels: {}
 ```
 
-`post` does not imply `read`. Wildcards are supported only in `allow`; denials name exact destinations and always take precedence within that policy.
+- `read` permits `message list` and `message get`.
+- `post` permits `message send`; it does not imply `read`.
+- People, group chats, and channels are separate destination types. A one-to-one person entry does not authorize a group chat or channel with the same identifier.
+- The `"*"` destination is supported only in `allow`. Exact denials override exact and wildcard allowances within the same policy.
+- Discovery metadata such as chat names, participants, teams, and channels is not constrained in this release.
+- Decoded token claims do not require `rawTokenExport`; complete bearer tokens do.
 
-`read` permits `message list/get`; `post` permits `message send` and does not imply read access. Chat/channel discovery, names, participants, teams, and other metadata are deliberately not constrained in this release. A chat entry never permits a channel with the same ID. Set `rawTokenExport: true` only when complete bearer tokens are genuinely required; decoded claims do not need it.
-
-## Browser editor
-
-Start the editor in the current workspace:
-
-```bash
-teams-cli --profile personal policy edit
-teams-cli --profile personal policy edit --port 58326 --open
-```
-
-The CLI tries ports 58326 through 58335 and then an operating-system-assigned port. It binds only to loopback outside containers. In a detected container it binds all interfaces so an explicitly published port can reach it; publish that port only onto a trusted localhost interface.
-
-The printed URL contains a one-time bootstrap token. The page exchanges it for an HttpOnly local session, removes it from the address bar, and connects back to the CLI. Draft saves keep the editor running. Save-and-Activate, Done, Ctrl-C, or closing the last editor connection ends the temporary server. There is no daemon.
-
-The Effective Access tab shows the intersection of active policies. Policy tabs display one-to-one names, returned group participants, and team/channel names. Active or filesystem-read-only policies can be edited in the page, but direct saving remains blocked; export the resulting YAML or copy the displayed atomic elevated apply command. Writable drafts can be saved normally.
-
-The editor is a policy-authoring interface, not a Teams replacement. It has no endpoint or control for reading message contents, starting conversations, or sending messages.
+## Inspect and test a draft
 
 Inspect configured or applicable policies:
 
@@ -116,15 +143,17 @@ teams-cli policy show
 teams-cli policy show --path /absolute/path/to/check
 ```
 
-Check representative decisions while the policy is still inactive. Warnings show what audit mode would deny:
+Check representative decisions while a policy is inactive. Warnings show what audit mode would deny:
 
 ```bash
-teams-cli --profile personal policy check send --chat CHAT_ID
-teams-cli --profile personal policy check send --channel CHANNEL_ID
-teams-cli --profile personal policy check read --chat CHAT_ID
-teams-cli --profile personal policy check read --channel CHANNEL_ID
-teams-cli --profile personal policy check raw-tokens
+teams-cli policy check read --chat CHAT_ID
+teams-cli policy check read --channel CHANNEL_ID
+teams-cli policy check send --chat CHAT_ID
+teams-cli policy check send --channel CHANNEL_ID
+teams-cli policy check raw-tokens
 ```
+
+The CLI evaluates active policy again immediately before each message request. A successful check is a preview rather than a promise that a later operation will still be allowed.
 
 ## Activate and protect a policy
 
@@ -134,7 +163,7 @@ Activate enforcement by name:
 teams-cli policy activate project-agent
 ```
 
-On POSIX systems, the command prints an exact additional protection instruction such as:
+On POSIX systems, activation prints an exact optional protection command such as:
 
 ```bash
 chmod 400 -- '/Users/me/.teams-cli/policies/project-agent.yaml'
@@ -142,34 +171,58 @@ chmod 400 -- '/Users/me/.teams-cli/policies/project-agent.yaml'
 
 Activation and filesystem protection are separate:
 
-- `active: true` makes the CLI enforce the policy.
+- `active: true` makes `teams-cli` enforce the policy.
 - Owner-read-only permissions reduce accidental same-user modification.
 - An active owner-writable policy is enforced but produces a warning.
 - An active policy or policy directory writable by group or other users fails closed.
-- On Windows, use an administrator-managed read-only ACL instead.
+- On Windows, use an administrator-managed read-only ACL for comparable protection.
 
-Read-only permissions are defense in depth, not an immutable lock. A process with sufficient owner or administrator privileges can still replace the file or use exported tokens outside this CLI.
+Read-only permissions are defense in depth, not an immutable lock. A process with sufficient owner or administrator privileges can still replace the file.
 
-## Deactivate, revise, or remove a policy
+## Edit or deactivate a policy manually
 
-The CLI intentionally has no deactivate or remove command. `policy edit` is the browser editor command; it does not make active policies editable. Use `policy show NAME` to obtain the exact file path. If the normal policy loader rejects the store, the editor can still show each malformed file and its validation problem.
+Policy files are ordinary YAML and may be edited with a text editor. The browser editor is the convenient path for creating and refining drafts, but it intentionally cannot save an active or filesystem-read-only policy in place. It can export the revised YAML or an atomic apply command instead.
 
-On POSIX systems, make that one file writable before changing it:
+There is deliberately no `policy deactivate` command. To deactivate an active policy, you must edit its file manually:
 
-```bash
-chmod u+w '/exact/policy/path.yaml'
-```
+1. Find the exact file path:
 
-To return to audit mode, set `active: false`. To revise an active policy, deactivate it first, make the changes, use `policy check`, and activate it again. To remove it completely, delete only that exact file:
+   ```bash
+   teams-cli policy show project-agent
+   ```
 
-```bash
-rm '/exact/policy/path.yaml'
-```
+2. If the file was made owner-read-only on POSIX, make that one file writable:
 
-Removing the last applicable active policy may make the subject unrestricted. Confirm the result with `policy show` and `policy check`.
+   ```bash
+   chmod u+w '/exact/policy/path.yaml'
+   ```
 
-If permissions are controlled by a read-only mount, sandbox, separate OS identity, or administrator ACL, revise the policy at that external enforcement layer.
+3. Open the file in your preferred editor and change only:
+
+   ```yaml
+   active: false
+   ```
+
+4. Review the result and test representative operations. The inactive policy now audits and warns without enforcing:
+
+   ```bash
+   teams-cli policy show project-agent
+   teams-cli policy check read --chat CHAT_ID
+   teams-cli policy check send --channel CHANNEL_ID
+   ```
+
+5. After revising the allowlists, activate it again when ready:
+
+   ```bash
+   teams-cli policy activate project-agent
+   ```
+
+If permissions are controlled by a read-only mount, sandbox, separate operating-system identity, or administrator ACL, change them through that external layer first.
+
+The CLI also has no policy removal command. To remove a policy, find its exact path and delete only that file. Removing the last applicable active policy may leave the workspace unrestricted, so confirm the result with `policy show` and `policy check`.
 
 ## Security boundary
 
-Policies primarily prevent accidental message disclosure or posts to the wrong destinations. Strong, non-bypassable enforcement requires controls outside the agent process, such as a separate OS identity, read-only container mount, restricted network egress, or server-side Teams permissions.
+Active policies are enforced when an operation goes through `teams-cli`. They primarily reduce accidental message disclosure, posts to unintended destinations, identity use, and token export.
+
+They do not constrain another HTTP client, a bearer token that has already been exported, or a sufficiently privileged local process that changes the policy store. Strong non-bypassable enforcement requires controls outside the agent process, such as a separate operating-system identity, a read-only container mount, restricted network egress, or server-side Teams permissions. See the [security model](../build/security-model.md) for the complete design boundary.

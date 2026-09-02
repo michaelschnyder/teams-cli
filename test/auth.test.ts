@@ -79,6 +79,51 @@ test("login stores the verified tenant and user in isolated identity storage", a
   }
 });
 
+test("first login discovers the tenant and user without explicit identity options", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-cli-login-default-"));
+  try {
+    const paths = storagePaths(root);
+    const identity = { tenantId: "discovered-tenant", userId: "discovered-user" };
+    const access = jwt({
+      tid: identity.tenantId,
+      oid: identity.userId,
+      preferred_username: "alex@example.test",
+      exp: 1_900_000_000,
+    });
+    const supportingToken = jwt({ tid: identity.tenantId, oid: identity.userId, exp: 1_900_000_000 });
+    const dependencies: AuthDependencies = {
+      now: () => new Date("2026-08-28T00:00:00.000Z"),
+      acquireTokens: async (_resources, options) => {
+        assert.equal(options.interactive, true);
+        assert.equal(options.tenant, undefined);
+        assert.equal(options.username, undefined);
+        return {
+          tokens: new Map([
+            [SKYPE_RESOURCE, access],
+            [CHAT_SVC_AGG_RESOURCE, supportingToken],
+            [OUTLOOK_SEARCH_RESOURCE, supportingToken],
+          ]),
+          close: async () => undefined,
+        };
+      },
+      exchangeToken: async () => ({
+        skypeToken: supportingToken,
+        region: "test",
+        endpoints: { chatService: "https://test.invalid" },
+      }),
+    };
+
+    const loggedIn = await login(paths, { browser: "edge" }, dependencies);
+
+    assert.equal(loggedIn.tenantId, identity.tenantId);
+    assert.equal(loggedIn.userId, identity.userId);
+    assert.equal(loggedIn.username, "alex@example.test");
+    assert.deepEqual(await loadSession(paths, identity), loggedIn);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 function jwt(payload: object): string {
   return `header.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`;
 }

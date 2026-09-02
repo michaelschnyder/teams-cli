@@ -492,9 +492,9 @@ export function createProgram(options: { storageRoot?: string; subjectPath?: str
     .description("A safety-conscious command-line client for persistent Microsoft Teams sessions")
     .version(CLI_VERSION)
     .option("--debug", "Show sanitized HTTP request diagnostics")
-    .option("--profile <name>", "Named configuration profile")
-    .option("--tenant <tenant-id>", "Microsoft tenant ID")
-    .option("--user <user-id>", "Microsoft user object ID")
+    .option("--profile <name>", "Optional named profile for selecting another identity")
+    .option("--tenant <tenant-id>", "Expected Microsoft tenant ID for advanced identity selection")
+    .option("--user <user-id>", "Expected Microsoft user object ID for advanced identity selection")
     .addOption(new Option("--browser <browser>", "Browser used for Microsoft sign-in").choices(["edge", "chrome"]))
     .showHelpAfterError();
 
@@ -594,7 +594,7 @@ export function createProgram(options: { storageRoot?: string; subjectPath?: str
       process.stdout.write("Logged out. Local Teams tokens and browser profiles were removed.\n");
     });
 
-  const profile = program.command("profile").description("Manage named configuration profiles");
+  const profile = program.command("profile").description("Manage optional named configuration profiles");
   profile.command("list").description("List configured profiles").action(async () => {
     const config = await loadProfiles(paths);
     const names = Object.keys(config.profiles).sort();

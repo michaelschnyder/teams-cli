@@ -18,11 +18,11 @@ Act through the CLI instead of calling its underlying APIs directly. Know which 
 The ordinary flow does not need a named profile, tenant ID, or user ID:
 
 ```bash
-teams-cli auth whoami
 teams-cli auth login
+teams-cli auth whoami
 ```
 
-Run `auth login` when no valid session exists, then use `auth whoami` to verify the signed-in tenant and user. Login saves the verified identity and browser in the implicit `default` profile. Use `--profile <name>` only when the user deliberately maintains more than one identity; profiles are configuration defaults, not security boundaries.
+On first use, run `auth login`, then use `auth whoami` to verify the signed-in tenant and user. Login saves the verified identity and browser in the implicit `default` profile. Use `--profile <name>` only when the user deliberately maintains more than one identity; profiles are configuration defaults, not security boundaries.
 
 Automated login requires `--username` and an absolute `--password-command` executable that prints the password to stdout. Never ask the user to weaken MFA or conditional access, and never store a password in configuration or a command line.
 
