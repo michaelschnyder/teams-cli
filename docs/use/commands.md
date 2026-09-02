@@ -37,21 +37,38 @@ Pagination cursors are opaque. Pass a returned cursor back unchanged and do not 
 
 ## Send a message
 
-Sending is externally visible and the CLI has no delete or undo command. Verify the identity and target, then preview the policy decision:
+Sending is externally visible and the CLI has no delete or undo command. The easiest first message to a person uses their email address:
 
 ```bash
 teams-cli auth whoami
-teams-cli policy check send --chat CHAT_ID
-teams-cli message send --chat CHAT_ID --body "Hello"
+teams-cli message send --person alice@example.com --body "Hello"
 ```
 
-Use `--channel CHANNEL_ID` for a channel. Pipe multiline text or text the shell may reinterpret on stdin:
+Teams represents a one-to-one conversation as a two-person chat: effectively a group chat containing only you and the recipient. `--person` looks up the email address in the current tenant, reuses either valid ID ordering when the direct chat already exists, and starts the conversation when it does not. If the resolved email belongs to another tenant or cannot be verified as a current-tenant member, the interactive CLI asks you to confirm the recipient before sending. For automation where you have already verified the identity, pass the Microsoft user object ID to `--person`.
+
+For an existing group chat or a channel, pass its discovered ID:
+
+```bash
+teams-cli message send --chat CHAT_ID --body "Hello everyone"
+teams-cli message send --channel CHANNEL_ID --body "Hello channel"
+```
+
+Exactly one of `--person`, `--chat`, or `--channel` is accepted by `message send`. A person must be allowed under `allow.people`; group chats and channels use their corresponding policy sections.
+
+Checking a policy decision ahead of time is optional. It can be useful when you already have a chat or channel ID and want to see whether the current policy is likely to allow the send:
+
+```bash
+teams-cli policy check send --chat CHAT_ID
+teams-cli policy check send --channel CHANNEL_ID
+```
+
+The send command enforces the applicable policy whether or not you run this preview. It evaluates policy again immediately before the network request, so a successful `policy check` is a preview, not a promise that a later operation will still be allowed.
+
+Pipe multiline text or text the shell may reinterpret on stdin:
 
 ```bash
 printf '%s' "Hello from the project team" | teams-cli message send --channel CHANNEL_ID
 ```
-
-The CLI evaluates policy again immediately before the network request. A successful `policy check` is a preview, not a promise that a later operation will still be allowed.
 
 ## Structured and binary output
 

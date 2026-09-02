@@ -28,7 +28,7 @@ Automated login requires `--username` and an absolute `--password-command` execu
 
 ## Discover and read
 
-Resolve display names to current IDs before reading or sending. Prefer `--json` when another command or tool will consume the result:
+Resolve display names to current IDs before reading or sending. A first message to a person can use their email address directly. Prefer `--json` when another command or tool will consume the result:
 
 ```bash
 teams-cli person search "Alice" --json
@@ -69,7 +69,7 @@ Policy decisions have these non-obvious semantics:
 - A person allow applies to a one-to-one chat resolved to that person. A group-chat entry never authorizes a channel with the same ID.
 - Every `.yaml` policy file must parse and match its filename. A malformed or misnamed file fails the policy store closed. An active policy or policy directory writable by group or other users also fails closed.
 
-Inspect effective access and preview representative decisions:
+Inspect effective access and, when useful, preview representative decisions:
 
 ```bash
 teams-cli policy list
@@ -83,13 +83,14 @@ Activation has no CLI deactivate or remove command, but it is not irreversible: 
 
 ## Send intentionally
 
-Sending is externally visible and the CLI has no delete or undo command. If the user's requested body or target is ambiguous, clarify it. Otherwise, verify the identity, rediscover the target, and preview the policy decision before sending:
+Sending is externally visible and the CLI has no delete or undo command. If the user's requested body or target is ambiguous, clarify it. Otherwise, verify the identity and rediscover the target. A policy preflight is optional because `message send` always enforces policy immediately before posting:
 
 ```bash
 teams-cli auth whoami
-teams-cli policy check send --chat <chat-id>
-teams-cli message send --chat <chat-id> --body "Hello"
+teams-cli message send --person alice@example.com --body "Hello"
 ```
+
+`--person` resolves a current-tenant member's email address to the two-person chat. An external or unverifiable email recipient requires terminal confirmation; a previously verified Microsoft user object ID can be passed instead. Use `--chat` for an existing group chat and `--channel` for a channel. When a chat or channel ID is known, `policy check send` can optionally preview the current decision.
 
 Use stdin for multiline bodies or text the shell may reinterpret:
 

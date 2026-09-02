@@ -22,6 +22,8 @@ test("loads packaged skills and resolves broad platform aliases", async () => {
   const verification = skills[0]?.content.indexOf("teams-cli auth whoami") ?? -1;
   assert.ok(firstUse >= 0 && verification > firstUse);
   assert.match(skills[0]?.content ?? "", /ordinary flow does not need a named profile, tenant ID, or user ID/);
+  assert.match(skills[0]?.content ?? "", /message send --person alice@example\.com/);
+  assert.match(skills[0]?.content ?? "", /policy preflight is optional/);
   assert.equal(lookupSkillPlatform("copilot")?.name, "github-copilot");
   assert.equal(lookupSkillPlatform("gemini")?.name, "gemini-cli");
 });

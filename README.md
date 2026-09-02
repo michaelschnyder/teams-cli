@@ -22,7 +22,7 @@ teams-cli --version
 teams-cli auth login
 ```
 
-The login opens a dedicated Edge profile by default. It discovers the signed-in tenant and user, then saves them in the implicit `default` profile. Most users never need to provide a tenant ID or create a named profile.
+The login opens a dedicated Microsoft Edge profile by default, or a dedicated Google Chrome profile when selected. It does not reuse your normal browser profile or its signed-in session. The CLI discovers the Teams tenant and user, then saves them in the implicit `default` profile. Most users never need to provide a tenant ID or create a named profile.
 
 ### 3. Install the agent skill
 
@@ -63,11 +63,10 @@ teams-cli person search "Alice" --json
 teams-cli chat list --json
 teams-cli channel list --json
 teams-cli message list --chat CHAT_ID --json
-teams-cli policy check send --chat CHAT_ID
-teams-cli message send --chat CHAT_ID --body "Hello"
+teams-cli message send --person alice@example.com --body "Hello"
 ```
 
-Use `--channel CHANNEL_ID` instead of `--chat CHAT_ID` for channel messages. Sending is externally visible and the CLI has no delete or undo command.
+For an existing group chat or channel, use `--chat CHAT_ID` or `--channel CHANNEL_ID`. You can optionally preview a known target with `teams-cli policy check send`; the send command always enforces the applicable policy again immediately before posting. Sending is externally visible and the CLI has no delete or undo command.
 
 ```mermaid
 flowchart LR
@@ -85,7 +84,7 @@ flowchart LR
 
 ### Agent skill
 
-The skill gives an agent the operational knowledge that command help alone cannot provide: discover current IDs before using them, verify the active identity, keep JSON payloads separate from diagnostics, preview policy decisions, and stop on denials. Installed copies can be refreshed when the CLI is upgraded.
+The skill gives an agent the operational knowledge that command help alone cannot provide: discover current IDs before using them, verify the active identity, keep JSON payloads separate from diagnostics, optionally preview policy decisions, and stop on denials. Installed copies can be refreshed when the CLI is upgraded.
 
 ### Cooperative policies
 

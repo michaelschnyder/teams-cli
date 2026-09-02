@@ -6,12 +6,14 @@ import test from "node:test";
 import {
   describeSession,
   ensureDataSession,
+  InteractiveLoginRequiredError,
   login,
   passwordFromCommand,
   refreshTokens,
   validateSession,
   type AuthDependencies,
 } from "../src/auth.js";
+import { OAuthRedirectError } from "../src/oauth.js";
 import { loadSession, saveSession, storagePaths, type StoredSession } from "../src/storage.js";
 import {
   CHAT_SVC_AGG_RESOURCE,
@@ -365,6 +367,40 @@ test("refreshes the access token used by person profile operations", async () =>
     };
     const refreshed = await ensureDataSession(paths, { tenantId: "tenant", userId: "user-id" }, "access", "edge", dependencies);
     assert.equal(refreshed.accessToken.value, freshAccess);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("reports when silent refresh needs an interactive login", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-cli-refresh-interactive-"));
+  try {
+    const paths = storagePaths(root);
+    await saveSession(paths, {
+      version: 3,
+      browser: "edge",
+      tenantId: "tenant",
+      userId: "user-id",
+      savedAt: "2026-08-18T00:00:00.000Z",
+      region: "emea",
+      accessToken: { value: jwt({ tid: "tenant" }), expiresAt: "2026-08-18T00:00:00.000Z" },
+      skypeToken: { value: jwt({ tid: "tenant" }), expiresAt: "2026-08-18T00:00:00.000Z" },
+      chatToken: { value: jwt({ tid: "tenant" }), expiresAt: "2026-08-18T00:00:00.000Z" },
+      searchToken: { value: jwt({ tid: "tenant" }), expiresAt: "2026-08-18T00:00:00.000Z" },
+      endpoints: { chatService: "https://emea.ng.msg.teams.microsoft.com" },
+    });
+    const dependencies: AuthDependencies = {
+      now: () => new Date("2026-08-18T00:00:00.000Z"),
+      acquireTokens: async () => {
+        throw new OAuthRedirectError("interaction_required", "MFA required");
+      },
+      exchangeToken: async () => { throw new Error("unexpected exchange"); },
+    };
+
+    await assert.rejects(
+      refreshTokens(paths, { tenantId: "tenant", userId: "user-id" }, "access", "edge", dependencies),
+      (error: unknown) => error instanceof InteractiveLoginRequiredError && error.code === "interaction_required",
+    );
   } finally {
     await rm(root, { recursive: true, force: true });
   }

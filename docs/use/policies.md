@@ -128,6 +128,7 @@ deny:
 - `read` permits `message list` and `message get`.
 - `post` permits `message send`; it does not imply `read`.
 - People, group chats, and channels are separate destination types. A one-to-one person entry does not authorize a group chat or channel with the same identifier.
+- `message send --person EMAIL` resolves the recipient to a Microsoft user object ID before checking `allow.people`; the policy never relies on a mutable email address as its destination key.
 - The `"*"` destination is supported only in `allow`. Exact denials override exact and wildcard allowances within the same policy.
 - Discovery metadata such as chat names, participants, teams, and channels is not constrained in this release.
 - Decoded token claims do not require `rawTokenExport`; complete bearer tokens do.

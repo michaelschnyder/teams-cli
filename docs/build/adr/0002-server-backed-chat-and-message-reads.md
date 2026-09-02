@@ -85,7 +85,7 @@ the session with version 2. Targeted refresh and data access require version 2.
 
 An expired credential is refreshed before use. An API request rejected with `401` or
 `403` refreshes only the relevant credential once and retries once. Authentication
-that requires interaction remains exclusive to `auth login`.
+that requires interaction asks before reopening the dedicated browser profile; non-interactive use remains explicit through `auth login`.
 
 The Outlook Search token currently carries the first-party
 `SubstrateSearch-Internal.ReadWrite` scope even though this CLI performs only search

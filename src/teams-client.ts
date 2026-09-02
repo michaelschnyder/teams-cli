@@ -77,6 +77,7 @@ export type PersonProfile = {
   mobile: string | null;
   telephoneNumber: string | null;
   phones: PersonPhone[];
+  tenantId: string | null;
   tenantName: string | null;
   userType: string | null;
   accountEnabled: boolean | null;
@@ -84,6 +85,12 @@ export type PersonProfile = {
 };
 
 export type PersonResult = { person: PersonProfile };
+export type DirectMessageTarget = {
+  target: MessageTarget;
+  person: PersonProfile;
+  existingChat: boolean;
+  sameTenantMember: boolean;
+};
 export type PersonImage = { data: Buffer; contentType: string };
 export type PersonImageSize = "48" | "64" | "96" | "120" | "240" | "360" | "432" | "504" | "648" | "max";
 
@@ -322,6 +329,7 @@ function normalizePersonProfile(value: unknown): PersonProfile | null {
     mobile: stringValue(person.mobile) ?? stringValue(person.Mobile),
     telephoneNumber: stringValue(person.telephoneNumber) ?? stringValue(person.TelephoneNumber),
     phones: normalizePhones(person.phones ?? person.Phones),
+    tenantId: stringValue(person.tenantId) ?? stringValue(person.TenantId),
     tenantName: stringValue(person.tenantName) ?? stringValue(person.TenantName),
     userType: stringValue(person.userType) ?? stringValue(person.UserType),
     accountEnabled: nullableBoolean(person.accountEnabled ?? person.AccountEnabled),
@@ -737,6 +745,57 @@ export async function getChat(
     cursor = result.page.nextCursor ?? undefined;
   } while (cursor);
   throw new Error(`Chat not found: ${chatId}`);
+}
+
+export async function resolveDirectMessageTarget(
+  session: StoredSession,
+  identifier: string,
+  fetchImplementation: typeof fetch = fetch,
+): Promise<DirectMessageTarget> {
+  const { person } = await getPerson(session, identifier, fetchImplementation);
+  const otherObjectId = person.mri?.startsWith("8:orgid:")
+    ? person.mri.slice("8:orgid:".length)
+    : person.id.startsWith("8:orgid:")
+      ? person.id.slice("8:orgid:".length)
+      : person.id;
+  if (!otherObjectId || otherObjectId === session.userId) {
+    throw new Error("Choose another Teams user as the message recipient");
+  }
+  const candidateIds = [
+    `19:${otherObjectId}_${session.userId}@unq.gbl.spaces`,
+    `19:${session.userId}_${otherObjectId}@unq.gbl.spaces`,
+  ];
+  let chatId = candidateIds[0] as string;
+  let existingChat = false;
+  for (const candidateId of candidateIds) {
+    const response = await observedFetch(fetchImplementation, new URL(
+      `/v1/users/ME/conversations/${encodeURIComponent(candidateId)}`,
+      session.endpoints.chatService,
+    ), {
+      headers: {
+        authentication: `skypetoken=${session.skypeToken.value}`,
+        accept: "application/json",
+      },
+    });
+    if (response.status === 404) continue;
+    await jsonResponse(response, "Direct chat lookup", "skype");
+    chatId = candidateId;
+    existingChat = true;
+    break;
+  }
+  const personIds = [...new Set([
+    person.id,
+    person.mri,
+    otherObjectId,
+    `8:orgid:${otherObjectId}`,
+  ].filter((value): value is string => Boolean(value)))];
+  return {
+    target: { kind: "chat", id: chatId, category: "person", personIds },
+    person,
+    existingChat,
+    sameTenantMember: person.userType?.toLowerCase() === "member" &&
+      (person.tenantId === null || person.tenantId === session.tenantId),
+  };
 }
 
 export async function listChannels(

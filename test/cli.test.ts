@@ -10,11 +10,14 @@ import {
   renderPerson,
   renderRefreshResult,
   renderTokens,
+  selectedSendTarget,
   selectedTarget,
 } from "../src/cli.js";
 import { CLI_VERSION } from "../src/version.js";
 import { initializePolicy, resolvePolicyByName } from "../src/policy.js";
 import { storagePaths, type StoredSession } from "../src/storage.js";
+import { saveSession } from "../src/storage.js";
+import { loadProfiles } from "../src/config.js";
 
 function jwt(payload: object): string {
   return `header.${Buffer.from(JSON.stringify(payload)).toString("base64url")}.signature`;
@@ -37,6 +40,8 @@ const session: StoredSession = {
 test("exposes version, skills, auth, profile, policy, person, chat, channel, and message commands", () => {
   const program = createProgram();
   assert.equal(program.version(), CLI_VERSION);
+  assert.match(program.options.find((option) => option.long === "--tenant")?.description ?? "", /Optional/);
+  assert.match(program.options.find((option) => option.long === "--user")?.description ?? "", /Optional/);
   assert.deepEqual(program.commands.map((command) => command.name()), ["version", "skills", "auth", "profile", "policy", "person", "chat", "channel", "message"]);
   const command = (name: string) => program.commands.find((candidate) => candidate.name() === name);
   assert.deepEqual(
@@ -55,6 +60,7 @@ test("exposes version, skills, auth, profile, policy, person, chat, channel, and
   assert.deepEqual(command("chat")?.commands.map((child) => child.name()), ["list", "get"]);
   assert.deepEqual(command("channel")?.commands.map((child) => child.name()), ["list", "get"]);
   assert.deepEqual(command("message")?.commands.map((child) => child.name()), ["list", "get", "send"]);
+  assert.ok(command("message")?.commands.find((child) => child.name() === "send")?.options.some((option) => option.long === "--person"));
   assert.equal(program.commands.some((command) => command.name() === "chats"), false);
 });
 
@@ -124,6 +130,7 @@ test("renders compact people and detailed person output", () => {
       mobile: null,
       telephoneNumber: null,
       phones: [],
+      tenantId: "tenant",
       tenantName: "Example",
       userType: "Member",
       accountEnabled: true,
@@ -150,6 +157,57 @@ test("requires exactly one direct message target", () => {
   assert.deepEqual(selectedTarget({ channel: "channel-1" }), { kind: "channel", id: "channel-1" });
   assert.throws(() => selectedTarget({}), /Exactly one/);
   assert.throws(() => selectedTarget({ chat: "chat-1", channel: "channel-1" }), /Exactly one/);
+});
+
+test("accepts an email recipient as the only send target", () => {
+  assert.equal(selectedSendTarget({ person: "ada@example.com" }), "ada@example.com");
+  assert.deepEqual(selectedSendTarget({ chat: "chat-1" }), { kind: "chat", id: "chat-1" });
+  assert.throws(() => selectedSendTarget({}), /Exactly one of --person, --chat, or --channel/);
+  assert.throws(
+    () => selectedSendTarget({ person: "ada@example.com", chat: "chat-1" }),
+    /Exactly one of --person, --chat, or --channel/,
+  );
+});
+
+test("offers first-time users an interactive login and saves the discovered default identity", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-cli-first-command-login-"));
+  const discovered: StoredSession = {
+    ...session,
+    tenantId: "discovered-tenant",
+    userId: "discovered-user",
+    username: "ada@example.test",
+    accessToken: {
+      value: jwt({ tid: "discovered-tenant", oid: "discovered-user", kind: "access" }),
+      expiresAt: "2027-01-01T00:00:00.000Z",
+    },
+  };
+  const questions: string[] = [];
+  try {
+    await createProgram({
+      storageRoot: root,
+      confirm: async (question) => {
+        questions.push(question);
+        return true;
+      },
+      loginImplementation: async (paths, options) => {
+        assert.equal(options.tenant, undefined);
+        assert.equal(options.user, undefined);
+        await options.authorizeIdentity?.(discovered);
+        await saveSession(paths, discovered);
+        return discovered;
+      },
+    }).parseAsync(["node", "teams-cli", "auth", "tokens", "access", "--decode"]);
+
+    assert.match(questions[0] ?? "", /No Teams session is configured/);
+    assert.deepEqual((await loadProfiles(storagePaths(root))).profiles.default, {
+      tenantId: "discovered-tenant",
+      userId: "discovered-user",
+      username: "ada@example.test",
+      browser: "edge",
+    });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("decodes JWT claims without showing the header or signature", () => {

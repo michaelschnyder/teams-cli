@@ -79,6 +79,13 @@ export type RefreshResult = {
   after: StoredSession;
 };
 
+export class InteractiveLoginRequiredError extends Error {
+  constructor(readonly code: string) {
+    super(`Microsoft needs an interactive sign-in (${code}).`);
+    this.name = "InteractiveLoginRequiredError";
+  }
+}
+
 const execFileAsync = promisify(execFile);
 
 export async function passwordFromCommand(command: string): Promise<string> {
@@ -186,9 +193,7 @@ function createStoredSession(
 
 function interactiveRefreshError(error: unknown): never {
   if (error instanceof OAuthRedirectError) {
-    throw new Error(
-      `Microsoft could not refresh the session without interaction (${error.code}). Run \`teams-cli auth login\`.`,
-    );
+    throw new InteractiveLoginRequiredError(error.code);
   }
   throw error;
 }
