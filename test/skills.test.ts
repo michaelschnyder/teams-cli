@@ -15,12 +15,9 @@ import {
 
 test("loads packaged skills and resolves broad platform aliases", async () => {
   const skills = await loadBundledSkills();
-  assert.deepEqual(skills.map(({ name }) => name), [
-    "teams-authentication",
-    "teams-cli",
-    "teams-messaging-policies",
-    "teams-reading",
-  ]);
+  assert.deepEqual(skills.map(({ name }) => name), ["teams-cli"]);
+  assert.equal(skills[0]?.description.includes("\n"), false);
+  assert.ok((skills[0]?.description.length ?? Number.POSITIVE_INFINITY) < 140);
   assert.equal(lookupSkillPlatform("copilot")?.name, "github-copilot");
   assert.equal(lookupSkillPlatform("gemini")?.name, "gemini-cli");
 });
@@ -56,6 +53,46 @@ test("records successful installs, protects existing files, and reinstalls manag
   const refreshed = await reinstallSkills(manifestFile);
   assert.deepEqual(refreshed, { filesWritten: 1, installations: 1 });
   assert.match(await readFile(skillFile, "utf8"), /name: teams-cli/);
+});
+
+test("migrates recorded legacy skills to the consolidated managed copy", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-skills-migration-"));
+  const firstDestination = join(root, "first");
+  const secondDestination = join(root, "second");
+  const manifestFile = join(root, "state", "installations.json");
+  const legacyNames = ["teams-authentication", "teams-messaging-policies", "teams-reading"];
+
+  for (const name of legacyNames) {
+    await mkdir(join(firstDestination, name), { recursive: true });
+    await writeFile(join(firstDestination, name, "SKILL.md"), `${name}\n`);
+  }
+  await writeFile(join(firstDestination, "teams-reading", "notes.md"), "preserve me\n");
+  await mkdir(join(secondDestination, "teams-reading"), { recursive: true });
+  await writeFile(join(secondDestination, "teams-reading", "SKILL.md"), "teams-reading\n");
+  await mkdir(join(root, "state"), { recursive: true });
+  await writeFile(manifestFile, `${JSON.stringify({
+    version: 1,
+    installations: [
+      { destination: firstDestination, skillNames: legacyNames },
+      { destination: secondDestination, skillNames: ["teams-reading"] },
+    ],
+  }, null, 2)}\n`);
+
+  assert.deepEqual(await reinstallSkills(manifestFile), { filesWritten: 2, installations: 2 });
+  assert.deepEqual((await loadSkillManifest(manifestFile)).installations, [
+    { destination: firstDestination, skillNames: ["teams-cli"] },
+    { destination: secondDestination, skillNames: ["teams-cli"] },
+  ]);
+  assert.match(await readFile(join(firstDestination, "teams-cli", "SKILL.md"), "utf8"), /name: teams-cli/);
+  assert.match(await readFile(join(secondDestination, "teams-cli", "SKILL.md"), "utf8"), /name: teams-cli/);
+  for (const name of legacyNames) {
+    await assert.rejects(readFile(join(firstDestination, name, "SKILL.md"), "utf8"), { code: "ENOENT" });
+  }
+  await assert.rejects(readFile(join(secondDestination, "teams-reading", "SKILL.md"), "utf8"), { code: "ENOENT" });
+  assert.equal(await readFile(join(firstDestination, "teams-reading", "notes.md"), "utf8"), "preserve me\n");
+
+  assert.deepEqual(await reinstallSkills(manifestFile), { filesWritten: 2, installations: 2 });
+  assert.equal(await readFile(join(firstDestination, "teams-reading", "notes.md"), "utf8"), "preserve me\n");
 });
 
 test("rejects unknown skill names", async () => {

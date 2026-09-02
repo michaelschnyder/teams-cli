@@ -1,6 +1,6 @@
 ---
 name: teams-cli
-description: Use teams-cli safely for Microsoft Teams authentication, discovery, reading, messaging, profiles, and policies.
+description: Use teams-cli safely for Microsoft Teams authentication, discovery, reading, messaging, and policies.
 license: MIT
 metadata:
   version: "0.1.0"
@@ -9,26 +9,105 @@ metadata:
 
 # Teams CLI
 
-Use `teams-cli` when a task requires command-line access to Microsoft Teams. The CLI uses an authenticated local Edge or Chrome profile and undocumented Microsoft APIs, so confirm organizational approval before use.
+Use `teams-cli` for command-line access to Microsoft Teams through an authenticated local Edge or Chrome session. It uses undocumented Microsoft APIs rather than Microsoft Graph, so confirm that the user's organization permits it before first use.
 
-## Discover commands
+Act through the CLI instead of calling its underlying APIs directly. Know which identity is active, use targets returned by fresh discovery, and treat policy denials as a stopping condition.
+
+## Start with the default session
+
+The ordinary flow does not need a named profile, tenant ID, or user ID:
 
 ```bash
-teams-cli --help
-teams-cli auth --help
-teams-cli person --help
-teams-cli chat --help
-teams-cli channel --help
-teams-cli message --help
-teams-cli policy --help
+teams-cli auth whoami
+teams-cli auth login
 ```
 
-Use `--profile <name>` to select a configured tenant and user. Prefer `--json` for machine-readable person, chat, channel, and message results. Keep stdout available for payloads; warnings and diagnostics use stderr.
+Run `auth login` when no valid session exists, then use `auth whoami` to verify the signed-in tenant and user. Login saves the verified identity and browser in the implicit `default` profile. Use `--profile <name>` only when the user deliberately maintains more than one identity; profiles are configuration defaults, not security boundaries.
 
-## Safe workflow
+Automated login requires `--username` and an absolute `--password-command` executable that prints the password to stdout. Never ask the user to weaken MFA or conditional access, and never store a password in configuration or a command line.
 
-1. Verify the selected identity with `teams-cli --profile <name> auth whoami`.
-2. Discover people, chats, or channels before using identifiers.
-3. Read the applicable policy with `teams-cli policy show`.
-4. Check a write target with `teams-cli policy check send` before sending.
-5. Never copy bearer tokens into prompts, logs, or source files.
+## Discover and read
+
+Resolve display names to current IDs before reading or sending. Prefer `--json` when another command or tool will consume the result:
+
+```bash
+teams-cli person search "Alice" --json
+teams-cli person get alice@example.com --json
+teams-cli chat list --json
+teams-cli channel list --json
+teams-cli chat get <chat-id> --json
+```
+
+For message operations, pass exactly one of `--chat` or `--channel`; the CLI does not infer the target type from an ID:
+
+```bash
+teams-cli message list --chat <chat-id> --json
+teams-cli message list --channel <channel-id> --page-size 50 --json
+teams-cli message get <message-id> --chat <chat-id> --json
+```
+
+Pagination cursors are opaque. Pass a returned cursor back unchanged and do not combine `--cursor` with `--page-size`; page size is 1 to 200.
+
+Machine-readable data stays on stdout while progress, policy notices, diagnostics, and update notices use stderr. Do not merge the streams when parsing JSON. `person image` writes binary data only to redirected stdout and refuses an interactive terminal; use `--base64` when the result must remain text.
+
+## Configure and check policies
+
+Policies are optional YAML files scoped to the canonical working-directory path. An authenticated command with no applicable active policy offers to open the temporary policy editor in an interactive terminal, or warns with the `policy edit` command in a non-interactive session. No active policy means the operation remains unrestricted, so configure least-privilege access before sensitive work:
+
+```bash
+teams-cli policy edit
+```
+
+The editor discovers people, chats, channels, and identities for selection, but cannot read message contents, start chats, or send messages. It is the normal way to create and refine an inactive policy before activation. Manual `policy init`, YAML editing, and `policy activate` remain available when the editor cannot be used.
+
+Policy decisions have these non-obvious semantics:
+
+- Every applicable active policy must allow the identity and operation; overlapping policies can only preserve or narrow access.
+- Inactive policies only warn about what they would deny. Use those warnings to test a draft before activation.
+- `read` permits `message list/get`; `post` permits `message send`. Neither implies the other.
+- Allows distinguish people, group chats, and channels. An allow entry may use the exact case-sensitive destination ID or `"*"`; denials use exact IDs only and override matching allows.
+- A person allow applies to a one-to-one chat resolved to that person. A group-chat entry never authorizes a channel with the same ID.
+- Every `.yaml` policy file must parse and match its filename. A malformed or misnamed file fails the policy store closed. An active policy or policy directory writable by group or other users also fails closed.
+
+Inspect effective access and preview representative decisions:
+
+```bash
+teams-cli policy list
+teams-cli policy show
+teams-cli policy check read --chat <chat-id>
+teams-cli policy check send --channel <channel-id>
+teams-cli policy check raw-tokens
+```
+
+Activation has no CLI deactivate or remove command, but it is not irreversible: an explicitly authorized manual revision can set `active: false` before editing or delete the exact policy file. The browser editor cannot directly save an active or filesystem-read-only policy; use its exported YAML or generated atomic apply command. Do not widen, deactivate, or remove a policy unless the user explicitly requests that exact change.
+
+## Send intentionally
+
+Sending is externally visible and the CLI has no delete or undo command. If the user's requested body or target is ambiguous, clarify it. Otherwise, verify the identity, rediscover the target, and preview the policy decision before sending:
+
+```bash
+teams-cli auth whoami
+teams-cli policy check send --chat <chat-id>
+teams-cli message send --chat <chat-id> --body "Hello"
+```
+
+Use stdin for multiline bodies or text the shell may reinterpret:
+
+```bash
+printf '%s' "Hello" | teams-cli message send --channel <channel-id>
+```
+
+The CLI re-evaluates policy immediately before the network request, so a successful preflight is a preview rather than a promise. If the final check denies the operation, report the denial and stop; do not bypass it with raw tokens, direct HTTP calls, or an unrequested policy edit.
+
+## Tokens and troubleshooting
+
+`auth tokens` prints live bearer tokens unless `--decode` is used. Export raw tokens only when the user explicitly requests them and policy permits it. Prefer decoded claims for questions about audiences or expiry, and never paste tokens, cookies, or authenticated headers into prompts, logs, issues, commits, or source files.
+
+For expired credentials, try concrete refresh commands before another interactive login:
+
+```bash
+teams-cli auth refresh
+teams-cli auth refresh access
+```
+
+Use `--debug` for sanitized request diagnostics. It reports methods, redacted endpoints, status, duration, and retries without headers, bodies, tokens, or conversation and message IDs.

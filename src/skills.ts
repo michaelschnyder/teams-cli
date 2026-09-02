@@ -5,13 +5,16 @@ import {
   readFile,
   readdir,
   rename,
+  rmdir,
   stat,
+  unlink,
   writeFile,
 } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseStrictYaml, requireObject } from "./yaml.js";
 
 export type SkillPlatform = {
   name: string;
@@ -24,6 +27,14 @@ export type SkillPlatform = {
 export type BundledSkill = { name: string; description: string; content: string };
 export type SkillInstallation = { destination: string; skillNames: string[] };
 export type SkillManifest = { version: 1; installations: SkillInstallation[] };
+
+const LEGACY_SKILL_NAMES = [
+  "teams-authentication",
+  "teams-messaging-policies",
+  "teams-reading",
+] as const;
+const LEGACY_SKILLS = new Set<string>(LEGACY_SKILL_NAMES);
+const CONSOLIDATED_SKILL = "teams-cli";
 
 export const SKILL_PLATFORMS: readonly SkillPlatform[] = [
   { name: "codex", aliases: [], projectDirectory: ".codex/skills", userDirectory: ".codex/skills", markers: [".codex"] },
@@ -78,14 +89,26 @@ function skillsResourceRoot(): string {
   return join(dirname(fileURLToPath(import.meta.url)), "skills");
 }
 
+function skillFrontmatter(content: string, file: string): Record<string, unknown> {
+  const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content);
+  if (!match?.[1]) throw new Error(`Skill ${file} has no YAML frontmatter`);
+  return requireObject(parseStrictYaml(match[1], `Skill ${file} frontmatter`), `Skill ${file} frontmatter`);
+}
+
 export async function loadBundledSkills(): Promise<BundledSkill[]> {
   const root = skillsResourceRoot();
   const entries = await readdir(root, { withFileTypes: true });
   const skills: BundledSkill[] = [];
   for (const entry of entries.filter((candidate) => candidate.isDirectory()).sort((a, b) => a.name.localeCompare(b.name))) {
-    const content = await readFile(join(root, entry.name, "SKILL.md"), "utf8");
-    const description = /^description:\s*(.+)$/m.exec(content)?.[1]?.trim();
+    const file = join(root, entry.name, "SKILL.md");
+    const content = await readFile(file, "utf8");
+    const frontmatter = skillFrontmatter(content, file);
+    if (frontmatter.name !== entry.name) {
+      throw new Error(`Skill ${entry.name} frontmatter name must match its directory`);
+    }
+    const description = typeof frontmatter.description === "string" ? frontmatter.description.trim() : "";
     if (!description) throw new Error(`Skill ${entry.name} has no description`);
+    if (description.includes("\n")) throw new Error(`Skill ${entry.name} description must be one line`);
     skills.push({ name: entry.name, description, content });
   }
   return skills;
@@ -177,20 +200,64 @@ export async function installSkills(options: {
   return { filesWritten, destinations };
 }
 
+function consolidatedSkillNames(names: readonly string[]): { names: string[]; legacyNames: string[] } {
+  const normalized = new Set<string>();
+  const legacyNames: string[] = [];
+  for (const name of names) {
+    if (LEGACY_SKILLS.has(name)) {
+      legacyNames.push(name);
+      normalized.add(CONSOLIDATED_SKILL);
+    } else {
+      normalized.add(name);
+    }
+  }
+  return { names: [...normalized].sort(), legacyNames };
+}
+
+async function removeLegacySkill(destination: string, name: string): Promise<void> {
+  const directory = join(destination, name);
+  try {
+    await unlink(join(directory, "SKILL.md"));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+  try {
+    await rmdir(directory);
+  } catch (error) {
+    if (!["ENOENT", "ENOTEMPTY", "EEXIST"].includes((error as NodeJS.ErrnoException).code ?? "")) throw error;
+  }
+}
+
 export async function reinstallSkills(manifestFile = skillManifestFile()): Promise<{
   filesWritten: number;
   installations: number;
 }> {
   const manifest = await loadSkillManifest(manifestFile);
+  const migrations = manifest.installations.map((installation) => ({
+    installation,
+    ...consolidatedSkillNames(installation.skillNames),
+  }));
   let filesWritten = 0;
-  for (const installation of manifest.installations) {
+  for (const { installation, names } of migrations) {
     const result = await installSkills({
       destinations: [installation.destination],
-      names: installation.skillNames,
+      names,
       force: true,
       manifestFile,
     });
     filesWritten += result.filesWritten;
+  }
+  if (migrations.some(({ legacyNames }) => legacyNames.length > 0)) {
+    for (const { installation, legacyNames } of migrations) {
+      for (const name of legacyNames) await removeLegacySkill(installation.destination, name);
+    }
+    await saveSkillManifest({
+      version: 1,
+      installations: migrations.map(({ installation, names }) => ({
+        destination: installation.destination,
+        skillNames: names,
+      })),
+    }, manifestFile);
   }
   return { filesWritten, installations: manifest.installations.length };
 }
