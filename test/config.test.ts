@@ -6,6 +6,7 @@ import test from "node:test";
 import {
   loadProfiles,
   removeProfile,
+  requireRuntimeIdentity,
   resolveRuntimeContext,
   saveProfile,
 } from "../src/config.js";
@@ -67,4 +68,11 @@ test("removes profile configuration without touching other profiles", async () =
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("directs an unconfigured first-time user to the default login flow", () => {
+  assert.throws(
+    () => requireRuntimeIdentity({ profileName: "default", browser: "edge" }),
+    /Run `teams-cli login` for the default setup/,
+  );
 });

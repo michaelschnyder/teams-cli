@@ -77,6 +77,7 @@ export type PersonProfile = {
   mobile: string | null;
   telephoneNumber: string | null;
   phones: PersonPhone[];
+  tenantId: string | null;
   tenantName: string | null;
   userType: string | null;
   accountEnabled: boolean | null;
@@ -84,6 +85,12 @@ export type PersonProfile = {
 };
 
 export type PersonResult = { person: PersonProfile };
+export type DirectMessageTarget = {
+  target: MessageTarget;
+  person: PersonProfile;
+  existingChat: boolean;
+  sameTenantMember: boolean;
+};
 export type PersonImage = { data: Buffer; contentType: string };
 export type PersonImageSize = "48" | "64" | "96" | "120" | "240" | "360" | "432" | "504" | "648" | "max";
 
@@ -107,6 +114,7 @@ export type MessageSummary = {
 
 export type PageInfo = { nextCursor: string | null };
 export type ChatPage = { chats: ChatSummary[]; page: PageInfo };
+export type ChatSearchResult = { query: string; chats: ChatSummary[]; page: PageInfo };
 export type ChannelList = { channels: ChannelSummary[] };
 export type ChatResult = { chat: ChatSummary };
 export type ChannelResult = { channel: ChannelSummary };
@@ -322,6 +330,7 @@ function normalizePersonProfile(value: unknown): PersonProfile | null {
     mobile: stringValue(person.mobile) ?? stringValue(person.Mobile),
     telephoneNumber: stringValue(person.telephoneNumber) ?? stringValue(person.TelephoneNumber),
     phones: normalizePhones(person.phones ?? person.Phones),
+    tenantId: stringValue(person.tenantId) ?? stringValue(person.TenantId),
     tenantName: stringValue(person.tenantName) ?? stringValue(person.TenantName),
     userType: stringValue(person.userType) ?? stringValue(person.UserType),
     accountEnabled: nullableBoolean(person.accountEnabled ?? person.AccountEnabled),
@@ -575,6 +584,113 @@ export async function listChats(
   return { chats, page: { nextCursor } };
 }
 
+type DirectChatLookup = {
+  id: string;
+  payload: { lastMessage?: { composetime?: unknown; originalarrivaltime?: unknown } };
+};
+
+function directChatIds(ownObjectId: string, otherObjectId: string): [string, string] {
+  return [
+    `19:${otherObjectId}_${ownObjectId}@unq.gbl.spaces`,
+    `19:${ownObjectId}_${otherObjectId}@unq.gbl.spaces`,
+  ];
+}
+
+async function findExistingDirectChat(
+  session: StoredSession,
+  otherObjectId: string,
+  fetchImplementation: typeof fetch,
+): Promise<DirectChatLookup | null> {
+  for (const id of directChatIds(session.userId, otherObjectId)) {
+    const response = await observedFetch(fetchImplementation, new URL(
+      `/v1/users/ME/conversations/${encodeURIComponent(id)}`,
+      session.endpoints.chatService,
+    ), {
+      headers: {
+        authentication: `skypetoken=${session.skypeToken.value}`,
+        accept: "application/json",
+      },
+    });
+    if (response.status === 404) continue;
+    const payload = await jsonResponse(response, "Direct chat lookup", "skype") as DirectChatLookup["payload"];
+    return { id, payload };
+  }
+  return null;
+}
+
+export async function searchChats(
+  session: StoredSession,
+  query: string,
+  fetchImplementation: typeof fetch = fetch,
+): Promise<ChatSearchResult> {
+  const trimmed = query.trim();
+  if (!trimmed) throw new Error("Chat search query must not be empty");
+  const url = new URL(OUTLOOK_SEARCH_URL);
+  url.searchParams.set("scenario", "powerbar");
+  const response = await observedFetch(fetchImplementation, url, {
+    method: "POST",
+    headers: {
+      authorization: `Bearer ${session.searchToken.value}`,
+      "content-type": "application/json",
+      accept: "application/json",
+    },
+    body: JSON.stringify({
+      EntityRequests: ["People", "Chat"].map((EntityType) => ({
+        Query: {
+          QueryString: trimmed,
+          DisplayQueryString: trimmed,
+          NormalizedQueryString: trimmed,
+        },
+        EntityType,
+        Size: 25,
+      })),
+      Scenario: { Name: "powerbar", Dimensions: [] },
+      Cvid: randomUUID(),
+      AppName: "Microsoft Teams",
+      LogicalId: randomUUID(),
+      dataSource: "personScoped",
+    }),
+  });
+  const payload = await jsonResponse(response, "Chat search", "search") as {
+    Groups?: Array<{ Type?: unknown; Suggestions?: unknown }>;
+  };
+  const chatGroup = payload.Groups?.find((candidate) => candidate.Type === "Chat");
+  const chats = Array.isArray(chatGroup?.Suggestions)
+    ? chatGroup.Suggestions
+      .map((chat) => normalizeChat(chat))
+      .filter((chat): chat is ChatSummary => chat !== null)
+    : [];
+  const peopleGroup = payload.Groups?.find((candidate) => candidate.Type === "People");
+  const people = Array.isArray(peopleGroup?.Suggestions) ? peopleGroup.Suggestions : [];
+  const directChats = await Promise.all(people.map(async (value): Promise<ChatSummary | null> => {
+    const participant = normalizeParticipant(value);
+    const objectId = participant?.objectId ?? (participant?.id.startsWith("8:orgid:")
+      ? participant.id.slice("8:orgid:".length)
+      : null);
+    if (!participant || !objectId || objectId === session.userId) return null;
+    const direct = await findExistingDirectChat(session, objectId, fetchImplementation);
+    if (!direct) return null;
+    return {
+      id: direct.id,
+      title: participant.displayName ?? participant.id,
+      type: "Chat",
+      oneOnOne: true,
+      hidden: false,
+      disabled: false,
+      read: null,
+      lastActivity: stringValue(direct.payload.lastMessage?.composetime) ??
+        stringValue(direct.payload.lastMessage?.originalarrivaltime),
+      participants: [participant],
+      participantCount: 2,
+    };
+  }));
+  return {
+    query: trimmed,
+    chats: [...directChats.filter((chat): chat is ChatSummary => chat !== null), ...chats],
+    page: { nextCursor: null },
+  };
+}
+
 export async function searchPeople(
   session: StoredSession,
   query: string,
@@ -737,6 +853,37 @@ export async function getChat(
     cursor = result.page.nextCursor ?? undefined;
   } while (cursor);
   throw new Error(`Chat not found: ${chatId}`);
+}
+
+export async function resolveDirectMessageTarget(
+  session: StoredSession,
+  identifier: string,
+  fetchImplementation: typeof fetch = fetch,
+): Promise<DirectMessageTarget> {
+  const { person } = await getPerson(session, identifier, fetchImplementation);
+  const otherObjectId = person.mri?.startsWith("8:orgid:")
+    ? person.mri.slice("8:orgid:".length)
+    : person.id.startsWith("8:orgid:")
+      ? person.id.slice("8:orgid:".length)
+      : person.id;
+  if (!otherObjectId || otherObjectId === session.userId) {
+    throw new Error("Choose another Teams user as the message recipient");
+  }
+  const direct = await findExistingDirectChat(session, otherObjectId, fetchImplementation);
+  const chatId = direct?.id ?? directChatIds(session.userId, otherObjectId)[0];
+  const personIds = [...new Set([
+    person.id,
+    person.mri,
+    otherObjectId,
+    `8:orgid:${otherObjectId}`,
+  ].filter((value): value is string => Boolean(value)))];
+  return {
+    target: { kind: "chat", id: chatId, category: "person", personIds },
+    person,
+    existingChat: direct !== null,
+    sameTenantMember: person.userType?.toLowerCase() === "member" &&
+      (person.tenantId === null || person.tenantId === session.tenantId),
+  };
 }
 
 export async function listChannels(

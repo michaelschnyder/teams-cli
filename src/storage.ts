@@ -190,7 +190,7 @@ export async function loadSession(paths: StoragePaths, identity: Identity): Prom
     raw = await readFile(file, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      throw new Error("Not logged in for the selected tenant and user. Run `teams-cli auth login`.");
+      throw new Error("Not logged in for the selected tenant and user. Run `teams-cli login`.");
     }
     throw error;
   }
@@ -204,7 +204,7 @@ export async function loadSession(paths: StoragePaths, identity: Identity): Prom
 
 export function requireCurrentSession(session: AnyStoredSession): StoredSession {
   if (session.version !== 3) {
-    throw new Error("Stored Teams session is outdated. Run `teams-cli auth login` again.");
+    throw new Error("Stored Teams session is outdated. Run `teams-cli login` again.");
   }
   return session;
 }

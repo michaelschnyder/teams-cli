@@ -9,6 +9,8 @@ import {
   listChannels,
   listChats,
   listMessages,
+  resolveDirectMessageTarget,
+  searchChats,
   searchPeople,
 } from "../src/teams-client.js";
 import type { StoredSession } from "../src/storage.js";
@@ -51,6 +53,37 @@ test("normalizes chat and channel discovery from a mocked API", async () => {
     team: { id: "team-1", name: "Testing" },
   });
   assert.equal((await getChannel(session, "channel-1", discoveryFetch)).channel.team.name, "Testing");
+});
+
+test("follows server-provided chat paging without inventing a page size", async () => {
+  const requests: Array<{ url: URL; headers: Record<string, string> }> = [];
+  const first = await listChats(session, undefined, async (input, init) => {
+    requests.push({
+      url: new URL(input.toString()),
+      headers: init?.headers as Record<string, string>,
+    });
+    return Response.json({
+      chats: [{ id: "chat-1", title: "First" }],
+      metadata: { hasMoreChats: true, syncToken: "server-sync-token" },
+    });
+  });
+  assert.ok(first.page.nextCursor);
+
+  const second = await listChats(session, first.page.nextCursor as string, async (input, init) => {
+    requests.push({
+      url: new URL(input.toString()),
+      headers: init?.headers as Record<string, string>,
+    });
+    return Response.json({
+      chats: [{ id: "chat-2", title: "Second" }],
+      metadata: { hasMoreChats: false },
+    });
+  });
+  assert.deepEqual(second.chats.map(({ id }) => id), ["chat-2"]);
+  assert.equal(second.page.nextCursor, null);
+  assert.equal(requests[1]?.url.pathname.endsWith("/updates"), true);
+  assert.equal(requests[1]?.headers["x-ms-synctoken"], "server-sync-token");
+  assert.equal(requests.some(({ url }) => url.searchParams.has("pageSize")), false);
 });
 
 test("lists and gets messages for chat and channel targets from a mocked API", async () => {
@@ -113,6 +146,51 @@ test("searches people with the search token and preserves server ranking", async
   await assert.rejects(() => searchPeople(session, "  ", searchFetch), /must not be empty/);
 });
 
+test("searches chats without loading the complete chat collection", async () => {
+  const requests: Array<{ url: URL; init: RequestInit | undefined }> = [];
+  const result = await searchChats(session, "  Ada  ", async (input, init) => {
+    const url = new URL(input.toString());
+    requests.push({ url, init });
+    if (url.pathname === "/search/api/v1/suggestions") {
+      return Response.json({
+        Groups: [
+          { Type: "People", Suggestions: [{
+            MRI: "8:orgid:person-1",
+            ExternalDirectoryObjectId: "person-1",
+            DisplayName: "Ada Lovelace",
+          }] },
+          { Type: "Chat", Suggestions: [{
+            ThreadId: "group-chat",
+            Name: "Ada working group",
+            MatchingMembers: [{ mri: "8:orgid:person-2", displayName: "Ada Byron" }],
+            ChatMembers: [],
+          }] },
+        ],
+      });
+    }
+    if (decodeURIComponent(url.pathname).includes("19:person-1_user-id@unq.gbl.spaces")) {
+      return Response.json({ lastMessage: { composetime: "2026-08-18T00:00:00Z" } });
+    }
+    throw new Error(`Unexpected request: ${url}`);
+  });
+
+  assert.equal(result.query, "Ada");
+  assert.deepEqual(result.chats.map((chat) => chat.id), [
+    "19:person-1_user-id@unq.gbl.spaces",
+    "group-chat",
+  ]);
+  assert.equal(result.chats[0]?.oneOnOne, true);
+  assert.equal(result.chats[1]?.participants[0]?.displayName, "Ada Byron");
+  const body = JSON.parse(String(requests[0]?.init?.body)) as {
+    EntityRequests: Array<{ EntityType: string; Size: number }>;
+  };
+  assert.deepEqual(body.EntityRequests.map(({ EntityType, Size }) => ({ EntityType, Size })), [
+    { EntityType: "People", Size: 25 },
+    { EntityType: "Chat", Size: 25 },
+  ]);
+  assert.equal(requests.some(({ url }) => url.pathname.includes("/api/csa/")), false);
+});
+
 test("gets a detailed person by email or MRI through middle tier", async () => {
   const urls: URL[] = [];
   const profileFetch: typeof fetch = async (input, init) => {
@@ -135,6 +213,7 @@ test("gets a detailed person by email or MRI through middle tier", async () => {
         mobile: "+44 7000",
         telephoneNumber: "+44 2000",
         phones: [{ type: "Mobile", number: "+44 7000" }],
+        tenantId: "tenant",
         tenantName: "Example",
         userType: "Member",
         accountEnabled: true,
@@ -145,11 +224,60 @@ test("gets a detailed person by email or MRI through middle tier", async () => {
   const result = await getPerson(session, "ada@example.com", profileFetch);
   assert.equal(result.person.jobTitle, "Programmer");
   assert.equal(result.person.department, "Research");
+  assert.equal(result.person.tenantId, "tenant");
   assert.deepEqual(result.person.phones, [{ type: "Mobile", number: "+44 7000" }]);
   assert.equal(urls[0]?.pathname, "/api/mt/part/emea-01/beta/users/ada%40example.com/");
   assert.equal(urls[0]?.searchParams.get("isMailAddress"), "true");
   await getPerson(session, "8:orgid:person-1", profileFetch);
   assert.equal(urls[1]?.searchParams.get("isMailAddress"), "false");
+});
+
+test("resolves an email recipient to either existing direct-chat ordering", async () => {
+  const requested: URL[] = [];
+  const result = await resolveDirectMessageTarget(session, "ada@example.com", async (input) => {
+    const url = new URL(input.toString());
+    requested.push(url);
+    if (url.pathname.includes("/beta/users/")) {
+      return Response.json({ value: {
+        objectId: "person-1",
+        mri: "8:orgid:person-1",
+        displayName: "Ada Lovelace",
+        email: "ada@example.com",
+        tenantId: "tenant",
+        userType: "Member",
+      } });
+    }
+    if (decodeURIComponent(url.pathname).includes("19:person-1_user-id@unq.gbl.spaces")) {
+      return new Response(null, { status: 404 });
+    }
+    return Response.json({ id: "existing" });
+  });
+
+  assert.equal(result.target.id, "19:user-id_person-1@unq.gbl.spaces");
+  assert.equal(result.target.category, "person");
+  assert.deepEqual(result.target.personIds, ["person-1", "8:orgid:person-1"]);
+  assert.equal(result.existingChat, true);
+  assert.equal(result.sameTenantMember, true);
+  assert.equal(requested.length, 3);
+});
+
+test("uses the first direct-chat ordering for a new recipient and identifies guests", async () => {
+  const result = await resolveDirectMessageTarget(session, "guest@example.net", async (input) => {
+    const url = new URL(input.toString());
+    if (url.pathname.includes("/beta/users/")) {
+      return Response.json({ value: {
+        objectId: "guest-id",
+        email: "guest@example.net",
+        tenantName: "External tenant",
+        userType: "Guest",
+      } });
+    }
+    return new Response(null, { status: 404 });
+  });
+
+  assert.equal(result.target.id, "19:guest-id_user-id@unq.gbl.spaces");
+  assert.equal(result.existingChat, false);
+  assert.equal(result.sameTenantMember, false);
 });
 
 test("uses the regional middle-tier fallback when auth returned no endpoint", async () => {

@@ -18,6 +18,7 @@ test("inactive policies audit while active policy denials make zero message POST
   const subjectPath = await mkdtemp(join(tmpdir(), "teams-cli-subject-"));
   const otherSubject = await mkdtemp(join(tmpdir(), "teams-cli-other-subject-"));
   let requests = 0;
+  let discoveryRequests = 0;
   const server = createServer((_request, response) => {
     requests += 1;
     response.writeHead(200, { "content-type": "application/json" });
@@ -27,6 +28,7 @@ test("inactive policies audit while active policy denials make zero message POST
   globalThis.fetch = (input, init) => {
     const url = new URL(input instanceof Request ? input.url : input);
     if (url.hostname === "teams.microsoft.com" && url.pathname.startsWith("/api/csa/api/v1/teams/users/me")) {
+      discoveryRequests += 1;
       return Promise.resolve(new Response(JSON.stringify({
         chats: ["audit-chat", "denied-chat", "allowed-chat", "unrestricted-chat"].map((id) => ({ id, title: id, isOneOnOne: false, members: [] })),
         users: [],
@@ -175,11 +177,124 @@ test("inactive policies audit while active policy denials make zero message POST
       /Policy denied operation/,
     );
     assert.equal(requests, 3);
+    assert.equal(discoveryRequests, 0);
   } finally {
     globalThis.fetch = originalFetch;
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
     await rm(root, { recursive: true, force: true });
     await rm(subjectPath, { recursive: true, force: true });
     await rm(otherSubject, { recursive: true, force: true });
+  }
+});
+
+test("sends to a current-tenant email through the person policy and confirms guests", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-cli-person-send-"));
+  const subjectPath = await mkdtemp(join(tmpdir(), "teams-cli-person-subject-"));
+  let posts = 0;
+  const server = createServer((request, response) => {
+    if (request.method === "POST") {
+      posts += 1;
+      response.writeHead(201);
+      response.end();
+      return;
+    }
+    response.writeHead(404);
+    response.end();
+  });
+  const originalFetch = globalThis.fetch;
+  let profile = {
+    objectId: "person-id",
+    displayName: "Ada Lovelace",
+    email: "ada@example.test",
+    tenantId: "tenant",
+    userType: "Member",
+  };
+  globalThis.fetch = (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : input);
+    if (url.hostname === "teams.microsoft.com" && url.pathname.includes("/beta/users/")) {
+      return Promise.resolve(Response.json({ value: profile }));
+    }
+    return originalFetch(input, init);
+  };
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("Loopback server did not bind");
+    const paths = storagePaths(root);
+    const identity = { tenantId: "tenant", userId: "user" };
+    const token = jwt({ tid: identity.tenantId, oid: identity.userId, exp: 2_000_000_000 });
+    await saveSession(paths, {
+      version: 3,
+      browser: "edge",
+      ...identity,
+      savedAt: new Date().toISOString(),
+      region: "test",
+      accessToken: { value: token, expiresAt: "2033-05-18T03:33:20.000Z" },
+      skypeToken: { value: token, expiresAt: "2033-05-18T03:33:20.000Z" },
+      chatToken: { value: token, expiresAt: "2033-05-18T03:33:20.000Z" },
+      searchToken: { value: token, expiresAt: "2033-05-18T03:33:20.000Z" },
+      endpoints: { chatService: `http://127.0.0.1:${address.port}` },
+    });
+    const policy = await initializePolicy(paths, "person-send", {
+      profileName: "default",
+      ...identity,
+      browser: "edge",
+    }, [], subjectPath);
+    await writeFile(policy.file, stringify({
+      version: 1,
+      name: "person-send",
+      active: true,
+      subject: { paths: [subjectPath] },
+      identity: { allowed: [identity] },
+      allow: { people: { "person-id": ["post"] }, chats: {}, channels: {}, rawTokenExport: false },
+      deny: { people: {}, chats: {}, channels: {} },
+    }), "utf8");
+    if (process.platform !== "win32") await chmod(policy.file, 0o400);
+    const originalWrite = process.stdout.write;
+    process.stdout.write = (() => true) as typeof process.stdout.write;
+    try {
+      await createProgram({
+        storageRoot: root,
+        subjectPath,
+        confirm: async () => { throw new Error("Current-tenant members must not require confirmation"); },
+      }).parseAsync([
+        "node", "teams-cli", "--tenant", identity.tenantId, "--user", identity.userId,
+        "message", "send", "--person", "ada@example.test", "--body", "Hello",
+      ]);
+    } finally {
+      process.stdout.write = originalWrite;
+    }
+    assert.equal(posts, 1);
+
+    profile = {
+      objectId: "person-id",
+      displayName: "Ada Lovelace",
+      email: "ada@example.test",
+      tenantId: "external-tenant",
+      userType: "Guest",
+    };
+    const questions: string[] = [];
+    await assert.rejects(
+      createProgram({
+        storageRoot: root,
+        subjectPath,
+        confirm: async (question) => {
+          questions.push(question);
+          return false;
+        },
+      }).parseAsync([
+        "node", "teams-cli", "--tenant", identity.tenantId, "--user", identity.userId,
+        "message", "send", "--person", "ada@example.test", "--body", "Hello again",
+      ]),
+      /Message not sent/,
+    );
+    assert.match(questions[0] ?? "", /not verified as a member of the current tenant/);
+    assert.equal(posts, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    await chmod(join(root, "policies", "person-send.yaml"), 0o600).catch(() => undefined);
+    await rm(root, { recursive: true, force: true });
+    await rm(subjectPath, { recursive: true, force: true });
   }
 });

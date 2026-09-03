@@ -54,7 +54,7 @@ persisted so later command invocations can validate and inspect the session.
 expired or rejected with `401` or `403`, the CLI attempts OAuth once with
 `prompt=none`, the saved tenant, and the same dedicated browser profile. It never
 turns that validation command into an interactive login. If Microsoft requires
-account selection, MFA, or another interaction, it tells the user to run `auth login`.
+account selection, MFA, or another interaction, the interactive CLI offers to reopen the dedicated browser profile and continue. Non-interactive use tells the user to run `auth login`.
 
 `auth whoami` shows identity, audience, absolute expiry, and duration remaining, but
 does not print token values. `auth tokens [all|access|skype|chat|search]` is the only supported
@@ -123,7 +123,7 @@ does not claim to revoke tokens remotely at Microsoft.
 - Keep authentication state outside the repository by default.
 - Never log Authorization headers, callback fragments, cookies, or raw tokens.
 - Print raw tokens only through `auth tokens` or its `auth token` alias.
-- Use interactive authentication only for `auth login`.
+- Use interactive authentication for explicit `auth login` and only after confirmation when a command must start or restore a session.
 - Verify refreshed tokens remain in the stored tenant before replacing the session.
 - Treat HTTP `401` and `403` as authentication or tenant-policy failures; do not bypass
   MFA, Conditional Access, consent, or security interstitials.
