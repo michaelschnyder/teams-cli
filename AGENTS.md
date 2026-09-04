@@ -20,7 +20,7 @@ node --import tsx --test test/policy.test.ts
 node --import tsx --test --test-name-pattern "denied" test/policy.test.ts
 ```
 
-CI runs check, test, build, `npm audit --omit=dev --audit-level=high`, `package:check`, and `package:smoke`. Ubuntu covers Node 22.20 and 24; macOS and Windows cover Node 24. Windows is in the matrix, so path handling must not assume POSIX separators.
+CI runs check, test, build, `npm audit --omit=dev --audit-level=high`, `package:check`, and `package:smoke`. Ubuntu, macOS, and Windows use the latest Node.js LTS through the reusable package-verification workflow. Windows is in the matrix, so path handling must not assume POSIX separators.
 
 "E2E" means two different things here. `test/policy-e2e.test.ts` is a normal offline test (temp storage + loopback server) and runs under `npm test`. Live E2E (`npm run test:e2e`, files `test/e2e/*.e2e.ts`) hits a real Teams tenant: it needs `.env.e2e.local` (copy `.env.e2e.example`), a dedicated test tenant with users Alice and Bob, and a team `teams-cli-e2e` with channels `allowed` and `denied`. Never point it at a personal or production tenant. `npm test` never runs live tests.
 

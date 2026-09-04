@@ -20,32 +20,9 @@ permissions:
 jobs:
   verify:
     if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
-    name: Verify ${{ matrix.os }} / Node LTS
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-    steps:
-      - name: Checkout publication source
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event_name == 'pull_request' && github.event.pull_request.merge_commit_sha || github.sha }}
-          persist-credentials: false
-      - name: Setup latest LTS Node.js
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: lts/*
-          package-manager-cache: false
-      - name: Install dependencies
-        run: npm ci --ignore-scripts
-      - name: Type-check and test
-        run: npm run check && npm test
-      - name: Build and validate package
-        run: npm run build && npm run package:check && npm run package:smoke
-      - name: Audit production dependencies
-        if: matrix.os == 'ubuntu-latest'
-        run: npm audit --omit=dev --audit-level=high
+    uses: ./.github/workflows/verify-package.yml
+    with:
+      source_ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event_name == 'pull_request' && github.event.pull_request.merge_commit_sha || github.sha }}
   publish:
     if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
     needs: verify
