@@ -2,6 +2,16 @@
 
 The default session created by `teams-cli login` or `teams-cli auth login` is used automatically. The examples on this page do not require a tenant ID or named profile.
 
+## Inspect the installed build
+
+```bash
+teams-cli --version
+teams-cli version
+teams-cli version --json
+```
+
+When piped, `--version` prints only semantic version text. In a terminal, version output includes the installed channel, local build provenance, associated release notes, and any available update. The policy editor shows the same exact version in its footer.
+
 ## Verify the active identity
 
 ```bash

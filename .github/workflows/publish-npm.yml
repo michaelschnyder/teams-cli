@@ -3,34 +3,40 @@ name: Publish to npm
 on:
   release:
     types: [published]
+  pull_request:
+    branches: [main]
+    types: [closed]
+  workflow_dispatch:
+    inputs:
+      notes:
+        description: Optional notes for a snapshot without an open pull request
+        required: false
+        type: string
 
 permissions:
   contents: read
-  id-token: write
-
-concurrency:
-  group: npm-publish
-  cancel-in-progress: false
+  pull-requests: read
 
 jobs:
-  publish:
-    runs-on: ubuntu-latest
-    environment: npm
+  verify:
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
+    name: Verify ${{ matrix.os }} / Node LTS
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
-      - name: Checkout release tag
+      - name: Checkout publication source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event_name == 'pull_request' && github.event.pull_request.merge_commit_sha || github.sha }}
           persist-credentials: false
-      - name: Setup Node.js
+      - name: Setup latest LTS Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24
+          node-version: lts/*
           package-manager-cache: false
-      - name: Require matching package version and release tag
-        env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: node -e "const p=require('./package.json'); if (process.env.RELEASE_TAG !== 'v'+p.version) throw new Error('Release tag must equal v'+p.version)"
       - name: Install dependencies
         run: npm ci --ignore-scripts
       - name: Type-check and test
@@ -38,13 +44,77 @@ jobs:
       - name: Build and validate package
         run: npm run build && npm run package:check && npm run package:smoke
       - name: Audit production dependencies
+        if: matrix.os == 'ubuntu-latest'
         run: npm audit --omit=dev --audit-level=high
-      - name: Configure one-time bootstrap credential
+  publish:
+    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: npm
+    concurrency:
+      group: npm-publish
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+    steps:
+      - name: Select publication mode
+        id: publication
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          case "$EVENT_NAME" in
+            release) echo "mode=stable" >> "$GITHUB_OUTPUT" ;;
+            pull_request) echo "mode=canary" >> "$GITHUB_OUTPUT" ;;
+            workflow_dispatch) echo "mode=snapshot" >> "$GITHUB_OUTPUT" ;;
+            *) exit 1 ;;
+          esac
+      - name: Checkout publication source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event_name == 'pull_request' && github.event.pull_request.merge_commit_sha || github.sha }}
+          persist-credentials: false
+      - name: Setup latest LTS Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: lts/*
+          registry-url: https://registry.npmjs.org
+          package-manager-cache: false
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+      - name: Prepare version and build provenance
+        id: prepared
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SNAPSHOT_NOTES: ${{ inputs.notes }}
+        run: node scripts/prepare-publication.mjs "${{ steps.publication.outputs.mode }}"
+      - name: Build and validate package
+        run: npm run build && npm run package:check && npm run package:smoke
+      - name: Publish public package
         env:
           NPM_BOOTSTRAP_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
+          PUBLISH_TAG: ${{ steps.prepared.outputs.tag }}
         run: |
           if [ -n "$NPM_BOOTSTRAP_TOKEN" ]; then
             npm config set //registry.npmjs.org/:_authToken "$NPM_BOOTSTRAP_TOKEN" --location=user
           fi
-      - name: Publish public package
-        run: npm publish --ignore-scripts --access public
+          npm publish --ignore-scripts --access public --tag "$PUBLISH_TAG"
+      - name: Publish installation summary
+        env:
+          MODE: ${{ steps.prepared.outputs.mode }}
+          VERSION: ${{ steps.prepared.outputs.version }}
+          INSTALL: ${{ steps.prepared.outputs.install }}
+        run: |
+          {
+            echo "## Published $MODE build"
+            echo
+            echo "Version: \`$VERSION\`"
+            echo
+            echo "Install with:"
+            echo
+            echo '```console'
+            echo "$INSTALL"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

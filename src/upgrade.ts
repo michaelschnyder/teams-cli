@@ -34,10 +34,13 @@ const defaultRunner: UpgradeRunner = (command, args) => new Promise((resolve, re
 export async function upgradeCli(options: {
   runner?: UpgradeRunner;
   globalRoot?: () => Promise<string>;
+  targetVersion?: string;
+  onInstalled?: () => Promise<void>;
 } = {}): Promise<void> {
   const runner = options.runner ?? defaultRunner;
   const npm = npmInvocation();
-  const installStatus = await runner(npm.command, [...npm.args, "install", "--global", `${PACKAGE_NAME}@latest`]);
+  const targetVersion = options.targetVersion ?? "latest";
+  const installStatus = await runner(npm.command, [...npm.args, "install", "--global", `${PACKAGE_NAME}@${targetVersion}`]);
   if (installStatus !== 0) {
     throw new Error(`npm upgrade failed with exit code ${installStatus}`);
   }
@@ -52,6 +55,7 @@ export async function upgradeCli(options: {
   if (!existsSync(installedCli) && !options.globalRoot) {
     throw new Error(`The updated CLI was not found at ${installedCli}`);
   }
+  await options.onInstalled?.();
   const reinstallStatus = await runner(process.execPath, [installedCli, "skills", "reinstall"]);
   if (reinstallStatus !== 0) {
     throw new Error(`The CLI was upgraded, but skill reinstallation failed with exit code ${reinstallStatus}`);

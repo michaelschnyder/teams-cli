@@ -44,6 +44,7 @@ export type AnyStoredSession = LegacyStoredSession | StoredSession;
 export type StoragePaths = {
   root: string;
   configFile: string;
+  settingsFile: string;
   authDirectory: string;
   browserProfilesDirectory: string;
   browserStagingDirectory: string;
@@ -68,6 +69,7 @@ export function storagePaths(root = join(homedir(), ".teams-cli")): StoragePaths
   return {
     root,
     configFile: join(root, "config.yaml"),
+    settingsFile: join(root, "settings.yaml"),
     authDirectory,
     browserProfilesDirectory,
     browserStagingDirectory,

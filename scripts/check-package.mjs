@@ -12,7 +12,7 @@ const parsed = JSON.parse(output);
 const { filename, files } = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0];
 try {
   const paths = files.map(({ path }) => path);
-  const rootFiles = new Set(["package.json", "README.md", "SECURITY.md", "CHANGELOG.md", "LICENSE"]);
+  const rootFiles = new Set(["package.json", "README.md", "SECURITY.md", "LICENSE"]);
   const unexpected = paths.filter((path) => !rootFiles.has(path) && !path.startsWith("dist/") &&
     !path.startsWith("docs/use/") && path !== "docs/releasing.md");
   if (unexpected.length) throw new Error(`Unexpected package files: ${unexpected.join(", ")}`);
@@ -21,6 +21,7 @@ try {
     "README.md",
     "LICENSE",
     "dist/cli.js",
+    "dist/build-info.json",
     "dist/skills/teams-cli/SKILL.md",
     "docs/use/assets/policy-editor.png",
     "docs/releasing.md",

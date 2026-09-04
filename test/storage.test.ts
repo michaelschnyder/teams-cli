@@ -33,6 +33,7 @@ test("partitions auth and browser state below a replaceable storage root", async
     const identity = { tenantId: "tenant", userId: "user-id" };
     assert.ok(paths.sessionFile(identity).startsWith(`${join(root, "auth")}${sep}`));
     assert.equal(paths.configFile, join(root, "config.yaml"));
+    assert.equal(paths.settingsFile, join(root, "settings.yaml"));
     assert.ok(paths.browserProfile(identity, "edge").startsWith(`${join(root, "browser-profiles")}${sep}`));
     assert.match(paths.browserProfile(identity, "chrome"), /chrome$/);
 

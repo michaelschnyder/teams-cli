@@ -83,9 +83,10 @@ import {
   type PersonSearchResult,
 } from "./teams-client.js";
 import { registerSkillsCommand } from "./commands/skills.js";
-import { registerVersionCommand } from "./commands/version.js";
+import { registerVersionCommand, showAdaptiveVersion } from "./commands/version.js";
 import { prepareUpdateNotification, runUpdateWorker } from "./update.js";
-import { CLI_VERSION } from "./version.js";
+import { resolveUpdateChannel } from "./settings.js";
+import { BUILD_INFO, CLI_VERSION } from "./version.js";
 
 type TokenTarget = "all" | "access" | "skype" | "chat" | "search";
 type GlobalOptions = RuntimeOverrides & { debug?: boolean };
@@ -98,6 +99,7 @@ export type ProgramOptions = {
   subjectPath?: string;
   confirm?: ConfirmPrompt;
   loginImplementation?: LoginImplementation;
+  fetcher?: typeof fetch;
 };
 
 type InteractiveAuthSupport = {
@@ -648,7 +650,7 @@ export function createProgram(options: ProgramOptions = {}): Command {
   const program = new Command()
     .name("teams-cli")
     .description("A safety-conscious command-line client for persistent Microsoft Teams sessions")
-    .version(CLI_VERSION)
+    .option("-V, --version", "Show the installed version and build provenance")
     .option("--debug", "Show sanitized HTTP request diagnostics")
     .option("--profile <name>", "Optional named profile for selecting another identity")
     .option("--tenant <tenant-id>", "Optional expected Microsoft tenant ID")
@@ -656,7 +658,19 @@ export function createProgram(options: ProgramOptions = {}): Command {
     .addOption(new Option("--browser <browser>", "Dedicated browser profile used for Microsoft sign-in").choices(["edge", "chrome"]))
     .showHelpAfterError();
 
-  registerVersionCommand(program);
+  const versionOptions = {
+    ...(options.storageRoot ? { storageRoot: options.storageRoot } : {}),
+    confirm: interactiveAuth.confirm,
+    ...(options.fetcher ? { fetcher: options.fetcher } : {}),
+  };
+  registerVersionCommand(program, versionOptions);
+  program.action(async () => {
+    if (program.opts().version === true) {
+      await showAdaptiveVersion(versionOptions);
+      return;
+    }
+    program.outputHelp();
+  });
   registerSkillsCommand(program, options.storageRoot);
   const runLogin = async (loginOptions: LoginCommandOptions) => {
     const context = await runtimeContext(program, paths);
@@ -1111,10 +1125,18 @@ if (entrypoint && realpathSync(entrypoint) === realpathSync(fileURLToPath(import
     if (process.argv[2] === "--internal-update-check" && process.env.TEAMS_CLI_UPDATE_WORKER === "1") {
       const currentVersion = process.argv[3];
       const file = process.argv[4];
-      if (currentVersion && file) await runUpdateWorker(currentVersion, file);
+      const channel = process.argv[5];
+      if (currentVersion && file && (channel === "stable" || channel === "canary")) {
+        await runUpdateWorker(currentVersion, file, fetch, new Date(), channel);
+      }
       return;
     }
-    await prepareUpdateNotification({ currentVersion: CLI_VERSION });
+    const versionInvocation = process.argv[2] === "version" || process.argv.includes("--version") || process.argv.includes("-V");
+    if (!versionInvocation) {
+      const paths = storagePaths();
+      const channel = await resolveUpdateChannel({ paths, installedChannel: BUILD_INFO.channel });
+      await prepareUpdateNotification({ currentVersion: CLI_VERSION, channel, installedChannel: BUILD_INFO.channel });
+    }
     await createProgram().parseAsync(process.argv);
   };
   run().catch((error: unknown) => {

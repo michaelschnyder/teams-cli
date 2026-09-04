@@ -65,6 +65,11 @@ test("secures the editor session and atomically saves a draft", async () => {
     assert.match(pageHtml, /alreadyAdded \? "Added" : "Add"/);
     assert.match(pageHtml, /configuredIds\(resource\.kind\)\.has\(resource\.id\)/);
     assert.match(pageHtml, /id="closeEditor"/);
+    assert.match(pageHtml, /<footer class="app-footer">/);
+    assert.match(pageHtml, /teams-cli test/);
+    assert.match(pageHtml, /href="https:\/\/github\.com\/michaelschnyder\/teams-cli"/);
+    assert.match(pageHtml, /aria-label="Open the teams-cli repository on GitHub"/);
+    assert.match(pageHtml, /target="_blank" rel="noopener noreferrer"/);
     assert.doesNotMatch(pageHtml, /skypetoken|accessToken/);
 
     const claim = await fetch(`${origin}/api/claim`, {
