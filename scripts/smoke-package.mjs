@@ -38,6 +38,13 @@ try {
     throw new Error("Installed CLI returned invalid build metadata");
   }
   execFileSync(process.execPath, [cli, "--help"], { stdio: "ignore", env: environment });
+  const coworkOutput = join(temporary, "cowork");
+  execFileSync(process.execPath, [cli, "skills", "install", "claude-cowork", "--dir", coworkOutput], {
+    stdio: "ignore",
+    env: environment,
+  });
+  const coworkArchive = readFileSync(join(coworkOutput, `teams-cli-cowork-skill-${expectedVersion}.zip`));
+  if (coworkArchive.subarray(0, 2).toString("utf8") !== "PK") throw new Error("Installed CLI did not create a Cowork ZIP");
   process.stdout.write(`Installed package smoke test passed for ${version}.\n`);
 } finally {
   if (tarball) rmSync(tarball, { force: true });

@@ -2,6 +2,7 @@
 import { Argument, Command, Option } from "commander";
 import { realpathSync } from "node:fs";
 import { randomInt, randomUUID } from "node:crypto";
+import { dirname } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { fileURLToPath } from "node:url";
 import { stringify } from "yaml";
@@ -82,7 +83,14 @@ import {
   type PersonResult,
   type PersonSearchResult,
 } from "./teams-client.js";
-import { registerSkillsCommand } from "./commands/skills.js";
+import {
+  hasDetectedAgentEnvironment,
+  hasManagedSkillInstallations,
+  registerSkillsCommand,
+  runSkillsInstall,
+  type SkillsCommandOptions,
+} from "./commands/skills.js";
+import { registerDoctorCommand } from "./commands/doctor.js";
 import { registerVersionCommand, showAdaptiveVersion } from "./commands/version.js";
 import { prepareUpdateNotification, runUpdateWorker } from "./update.js";
 import { resolveUpdateChannel } from "./settings.js";
@@ -101,6 +109,7 @@ export type ProgramOptions = {
   loginImplementation?: LoginImplementation;
   fetcher?: typeof fetch;
   environment?: NodeJS.ProcessEnv;
+  detectCowork?: () => Promise<boolean>;
 };
 
 type InteractiveAuthSupport = {
@@ -664,6 +673,17 @@ export function createProgram(options: ProgramOptions = {}): Command {
     ...(options.fetcher ? { fetcher: options.fetcher } : {}),
     ...(options.environment ? { environment: options.environment } : {}),
   };
+  const isolatedSkillRoot = options.storageRoot ? dirname(options.storageRoot) : undefined;
+  const skillsOptions: SkillsCommandOptions = {
+    ...(options.storageRoot ? { storageRoot: options.storageRoot } : {}),
+    ...(options.environment ? { environment: options.environment } : {}),
+    ...(isolatedSkillRoot ? { projectRoot: isolatedSkillRoot, userHome: isolatedSkillRoot } : {}),
+    ...(options.detectCowork
+      ? { detectCowork: options.detectCowork }
+      : options.storageRoot
+        ? { detectCowork: async () => false }
+        : {}),
+  };
   registerVersionCommand(program, versionOptions);
   program.action(async () => {
     if (program.opts().version === true) {
@@ -672,9 +692,27 @@ export function createProgram(options: ProgramOptions = {}): Command {
     }
     program.outputHelp();
   });
-  registerSkillsCommand(program, options.storageRoot);
+  registerSkillsCommand(program, skillsOptions);
+  registerDoctorCommand(program, {
+    paths,
+    context: () => runtimeContext(program, paths),
+    ...(skillsOptions.projectRoot ? { projectRoot: skillsOptions.projectRoot } : {}),
+    ...(skillsOptions.userHome ? { userHome: skillsOptions.userHome } : {}),
+    ...(skillsOptions.environment ? { environment: skillsOptions.environment } : {}),
+    ...(skillsOptions.detectCowork ? { detectCowork: skillsOptions.detectCowork } : {}),
+  });
   const runLogin = async (loginOptions: LoginCommandOptions) => {
     const context = await runtimeContext(program, paths);
+    const interactive = options.confirm !== undefined || Boolean(process.stdin.isTTY && process.stderr.isTTY);
+    if (
+      interactive && !loginOptions.headless && !loginOptions.passwordCommand &&
+      !context.tenantId && !context.userId &&
+      !await hasManagedSkillInstallations(options.storageRoot) &&
+      await hasDetectedAgentEnvironment(skillsOptions) &&
+      await interactiveAuth.confirm("No agent skill is installed yet. Install the teams-cli skill before signing in?")
+    ) {
+      await runSkillsInstall(undefined, {}, skillsOptions);
+    }
     const policies = await resolvePolicies(paths, subjectPath);
     const reportPolicyWarnings = policyWarningReporter();
     reportPolicyWarnings(policyStatusWarnings(policies));
@@ -1132,8 +1170,9 @@ if (entrypoint && realpathSync(entrypoint) === realpathSync(fileURLToPath(import
       }
       return;
     }
-    const versionInvocation = process.argv[2] === "version" || process.argv.includes("--version") || process.argv.includes("-V");
-    if (!versionInvocation) {
+    const readOnlyInvocation = process.argv[2] === "version" || process.argv.slice(2).includes("doctor") ||
+      process.argv.includes("--version") || process.argv.includes("-V");
+    if (!readOnlyInvocation) {
       const paths = storagePaths();
       const channel = await resolveUpdateChannel({ paths, installedChannel: BUILD_INFO.channel });
       await prepareUpdateNotification({ currentVersion: CLI_VERSION, channel, installedChannel: BUILD_INFO.channel });

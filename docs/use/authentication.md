@@ -11,6 +11,8 @@ teams-cli auth whoami
 
 `teams-cli login` is a top-level alias for `teams-cli auth login`; it does not duplicate the other authentication commands at the top level. Login opens a dedicated Microsoft Edge profile by default, or a dedicated Google Chrome profile when selected. This isolated browser profile does not reuse the normal browser profile or its signed-in session. Microsoft handles account selection and any required MFA, and the CLI discovers the verified tenant and user from the returned tokens. The CLI stores that identity and browser in the implicit `default` profile, so later commands need no tenant or profile arguments.
 
+If the first interactive login detects an agent environment but no identity or CLI-managed skill, it offers to run `teams-cli skills install` before opening the browser. Accepting installs or prepares the detected targets and then continues the requested login; declining skips installation and also continues. Headless, password-command, and other non-interactive login flows do not prompt.
+
 `auth whoami` validates the saved session and displays the user, tenant, token audiences, and expiry times. Like other authenticated commands, it may offer to open the policy editor when no active policy applies to the current workspace.
 
 ## Session storage and refresh

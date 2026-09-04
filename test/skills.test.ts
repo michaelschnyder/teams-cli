@@ -3,7 +3,12 @@ import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { strFromU8, unzipSync } from "fflate";
+import { runSkillsInstall } from "../src/commands/skills.js";
+import { CLI_VERSION } from "../src/version.js";
 import {
+  createCoworkSkillPackage,
+  detectClaudeDesktop,
   detectSkillPlatforms,
   installSkills,
   loadBundledSkills,
@@ -56,10 +61,136 @@ test("records successful installs, protects existing files, and reinstalls manag
   await writeFile(skillFile, "local change\n");
   const protectedInstall = await installSkills({ destinations: [destination], names: ["teams-cli"], manifestFile });
   assert.equal(protectedInstall.filesWritten, 0);
+  assert.equal(protectedInstall.files[0]?.status, "conflict");
   assert.equal(await readFile(skillFile, "utf8"), "local change\n");
 
   const refreshed = await reinstallSkills(manifestFile);
   assert.deepEqual(refreshed, { filesWritten: 1, installations: 1 });
+  assert.match(await readFile(skillFile, "utf8"), /name: teams-cli/);
+});
+
+test("treats an identical existing skill as installed and begins managing it", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-skills-identical-"));
+  const destination = join(root, "destination");
+  const manifestFile = join(root, "state", "installations.json");
+  const canonical = (await loadBundledSkills())[0]?.content;
+  assert.ok(canonical);
+  await mkdir(join(destination, "teams-cli"), { recursive: true });
+  await writeFile(join(destination, "teams-cli", "SKILL.md"), canonical.replaceAll("\n", "\r\n"));
+
+  const result = await installSkills({ destinations: [destination], manifestFile });
+
+  assert.equal(result.filesWritten, 0);
+  assert.equal(result.files[0]?.status, "already-installed");
+  assert.deepEqual((await loadSkillManifest(manifestFile)).installations, [{ destination, skillNames: ["teams-cli"] }]);
+
+  const forced = await installSkills({ destinations: [destination], manifestFile, force: true });
+  assert.equal(forced.filesWritten, 1);
+  assert.equal(forced.files[0]?.status, "installed");
+  assert.equal(await readFile(join(destination, "teams-cli", "SKILL.md"), "utf8"), canonical);
+});
+
+test("detects Claude Desktop without depending on the host operating system", async () => {
+  const commands: Array<{ command: string; args: readonly string[] }> = [];
+  assert.equal(await detectClaudeDesktop({
+    platform: "win32",
+    run: async (command, args) => {
+      commands.push({ command, args });
+      return "Claude\n";
+    },
+  }), true);
+  assert.equal(commands[0]?.command, "powershell.exe");
+  assert.match(commands[0]?.args.join(" ") ?? "", /Get-AppxPackage -Name Claude/);
+
+  assert.equal(await detectClaudeDesktop({
+    platform: "darwin",
+    userHome: "/users/alice",
+    exists: (path) => path === "/Applications/Claude.app",
+  }), true);
+  assert.equal(await detectClaudeDesktop({
+    platform: "linux",
+    userHome: "/home/alice",
+    environment: { PATH: "/usr/local/bin:/usr/bin" },
+    exists: (path) => path === "/usr/local/bin/claude-desktop",
+  }), true);
+  assert.equal(await detectClaudeDesktop({ platform: "aix", exists: () => true }), false);
+});
+
+test("creates a Cowork ZIP with a thin adapter and the unchanged canonical skill", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-cowork-skill-"));
+  const file = await createCoworkSkillPackage(root);
+  const archive = unzipSync(await readFile(file));
+  assert.deepEqual(Object.keys(archive).sort(), ["SKILL.md", "instructions.md"]);
+  const canonical = (await loadBundledSkills())[0]?.content;
+  assert.ok(canonical);
+  assert.equal(strFromU8(archive["instructions.md"] as Uint8Array), canonical);
+  const adapter = strFromU8(archive["SKILL.md"] as Uint8Array);
+  assert.match(adapter, /name: teams-cli/);
+  assert.match(adapter, new RegExp(`version: "${CLI_VERSION.replaceAll(".", "\\.")}"`));
+  assert.match(adapter, /\[complete teams-cli instructions\]\(instructions\.md\)/);
+  assert.doesNotMatch(adapter, /header\.|signature|bearer token value/);
+});
+
+test("installs detected local skills and prepares Cowork without recording Cowork state", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-cowork-install-"));
+  const storageRoot = join(root, ".teams-cli");
+  await mkdir(join(root, ".claude"));
+  let output = "";
+  await runSkillsInstall(undefined, {}, {
+    storageRoot,
+    projectRoot: root,
+    userHome: root,
+    detectCowork: async () => true,
+    stdout: { write: (chunk) => { output += chunk.toString(); return true; } },
+  });
+
+  assert.match(output, /^Installed claude-code:/m);
+  assert.match(output, /^Claude Cowork requires one final step\.$/m);
+  assert.match(output, /cannot verify Cowork's account-level installation or permissions/);
+  assert.equal((await loadSkillManifest(join(storageRoot, "skill-installations.json"))).installations.length, 1);
+  assert.ok((await readFile(join(root, "Downloads", `teams-cli-cowork-skill-${CLI_VERSION}.zip`))).length > 0);
+
+  output = "";
+  const explicitOutput = join(root, "exports");
+  await runSkillsInstall("claude-cowork", { dir: explicitOutput }, {
+    storageRoot,
+    projectRoot: root,
+    userHome: root,
+    detectCowork: async () => false,
+    stdout: { write: (chunk) => { output += chunk.toString(); return true; } },
+  });
+  assert.match(output, /^Claude Cowork requires one final step\.$/m);
+  assert.ok((await readFile(join(explicitOutput, `teams-cli-cowork-skill-${CLI_VERSION}.zip`))).length > 0);
+  assert.equal((await loadSkillManifest(join(storageRoot, "skill-installations.json"))).installations.length, 1);
+});
+
+test("reports simple installation states while preserving a modified copy", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-skills-output-"));
+  const destination = join(root, "skills");
+  const options = {
+    storageRoot: join(root, ".teams-cli"),
+    projectRoot: root,
+    userHome: root,
+    detectCowork: async () => false,
+  };
+  let output = "";
+  const stdout = { write: (chunk: string | Uint8Array) => { output += chunk.toString(); return true; } };
+
+  await runSkillsInstall("codex", { dir: destination }, { ...options, stdout });
+  assert.match(output, /^Installed custom agent directory:/);
+  output = "";
+  await runSkillsInstall("codex", { dir: destination }, { ...options, stdout });
+  assert.match(output, /^Already installed custom agent directory:/);
+
+  const skillFile = join(destination, "teams-cli", "SKILL.md");
+  await writeFile(skillFile, "modified\n");
+  output = "";
+  await runSkillsInstall("codex", { dir: destination }, { ...options, stdout });
+  assert.match(output, /^Already installed custom agent directory:.*left unchanged/);
+  assert.equal(await readFile(skillFile, "utf8"), "modified\n");
+  output = "";
+  await runSkillsInstall("codex", { dir: destination, force: true }, { ...options, stdout });
+  assert.match(output, /^Installed custom agent directory:/);
   assert.match(await readFile(skillFile, "utf8"), /name: teams-cli/);
 });
 
