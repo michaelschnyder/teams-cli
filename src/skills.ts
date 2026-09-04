@@ -13,7 +13,7 @@ import {
 } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { strToU8, zipSync } from "fflate";
 import { parseStrictYaml, requireObject } from "./yaml.js";
@@ -134,13 +134,13 @@ export async function detectClaudeDesktop(options: ClaudeDesktopDetectionOptions
     }
   }
   if (selectedPlatform === "darwin") {
-    return exists("/Applications/Claude.app") || exists(join(userHome, "Applications", "Claude.app"));
+    return exists("/Applications/Claude.app") || exists(posix.join(userHome, "Applications", "Claude.app"));
   }
   if (selectedPlatform === "linux") {
     const pathDirectories = (environment.PATH ?? "").split(":").filter(Boolean);
-    return pathDirectories.some((directory) => exists(join(directory, "claude-desktop"))) ||
+    return pathDirectories.some((directory) => exists(posix.join(directory, "claude-desktop"))) ||
       exists("/usr/share/applications/claude.desktop") ||
-      exists(join(userHome, ".local", "share", "applications", "claude.desktop"));
+      exists(posix.join(userHome, ".local", "share", "applications", "claude.desktop"));
   }
   return false;
 }

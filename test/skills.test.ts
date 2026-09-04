@@ -76,7 +76,10 @@ test("treats an identical existing skill as installed and begins managing it", a
   const canonical = (await loadBundledSkills())[0]?.content;
   assert.ok(canonical);
   await mkdir(join(destination, "teams-cli"), { recursive: true });
-  await writeFile(join(destination, "teams-cli", "SKILL.md"), canonical.replaceAll("\n", "\r\n"));
+  const alternateLineEndings = canonical.includes("\r\n")
+    ? canonical.replaceAll("\r\n", "\n")
+    : canonical.replaceAll("\n", "\r\n");
+  await writeFile(join(destination, "teams-cli", "SKILL.md"), alternateLineEndings);
 
   const result = await installSkills({ destinations: [destination], manifestFile });
 
