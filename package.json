@@ -1,6 +1,6 @@
 {
   "name": "@michaelschnyder/teams-cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "A safety-conscious CLI for persistent Microsoft Teams sessions",
   "type": "module",
   "bin": {

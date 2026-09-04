@@ -12,7 +12,7 @@ import { parseBuildInfo } from "../src/version.js";
 test("keeps adaptive version output terse outside a TTY", async () => {
   let output = "";
   await showAdaptiveVersion({ stdout: { isTTY: false, write: (value) => { output += String(value); return true; } } });
-  assert.equal(output, "0.1.0\n");
+  assert.equal(output, "0.2.0\n");
 });
 
 test("sanitizes provenance and release text rendered in a terminal", () => {

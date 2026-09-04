@@ -1,6 +1,6 @@
 # Releasing
 
-Stable releases, canaries, and snapshots are all published by `.github/workflows/publish-npm.yml` so they share one npm trusted publisher and provenance chain. Stable release tags must exactly equal `v` followed by the version in `package.json`.
+Stable releases, canaries, and snapshots are all published by `.github/workflows/publish-npm.yml` so they share one npm trusted publisher and provenance chain. The workflow run and publication job names automatically identify the channel from the trigger: a published GitHub Release is a release, a successful eligible `main` CI run is a canary, and a manual dispatch is a snapshot. Stable release tags must exactly equal `v` followed by the version in `package.json`.
 
 ## Repository setup
 
@@ -48,6 +48,6 @@ teams-cli version --channel canary
 
 ## Branch snapshots
 
-Repository contributors with write, maintain, or admin permission can run the publish workflow from `main` and enter a repository branch to snapshot. The workflow verifies that the requested branch and checked-out commit belong to this repository; fork refs and dispatches using a modified branch workflow are not accepted. It publishes an immutable `snapshot` prerelease, associates an npm tag with the selected branch, and prints the exact install command in its summary.
+Repository contributors with write, maintain, or admin permission can run the publish workflow from `main` and enter a repository branch to snapshot. Manual runs are automatically classified as snapshot publications. The workflow verifies that the requested branch and checked-out commit belong to this repository; fork refs and dispatches using a modified branch workflow are not accepted. It publishes an immutable `snapshot` prerelease, associates an npm tag with the selected branch, and prints exact global-install and npx commands in its summary. Canary summaries provide both commands as well.
 
 Snapshots never update automatically. Testers leave a snapshot by explicitly installing `latest` or `canary` through their package manager and selecting the corresponding notification channel.

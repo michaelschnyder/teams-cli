@@ -1,4 +1,8 @@
 name: Publish to npm
+run-name: >-
+  ${{ github.event_name == 'release' && 'Release publish' ||
+      github.event_name == 'workflow_run' && 'Canary publish' ||
+      'Snapshot publish' }}
 
 on:
   release:
@@ -24,6 +28,7 @@ permissions:
 
 jobs:
   resolve-canary:
+    name: Resolve canary publication
     if: >-
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.conclusion == 'success' &&
@@ -47,6 +52,7 @@ jobs:
             echo "number=$number" >> "$GITHUB_OUTPUT"
           fi
   verify:
+    name: Verify ${{ github.event_name == 'release' && 'release' || github.event_name == 'workflow_run' && 'canary' || 'snapshot' }} publication
     if: >-
       github.event_name == 'release' ||
       (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
@@ -55,6 +61,7 @@ jobs:
       source_ref: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.ref }}
       operating_systems: '["ubuntu-latest"]'
   publish:
+    name: Publish ${{ github.event_name == 'release' && 'release' || github.event_name == 'workflow_run' && 'canary' || 'snapshot' }} to npm
     if: >-
       always() &&
       ((github.event_name == 'workflow_run' &&
@@ -74,7 +81,7 @@ jobs:
       pull-requests: read
       id-token: write
     steps:
-      - name: Select publication mode
+      - name: Detect publication channel from trigger
         id: publication
         shell: bash
         env:
@@ -118,6 +125,7 @@ jobs:
           MODE: ${{ steps.prepared.outputs.mode }}
           VERSION: ${{ steps.prepared.outputs.version }}
           INSTALL: ${{ steps.prepared.outputs.install }}
+          NPX: ${{ steps.prepared.outputs.npx }}
         run: |
           {
             echo "## Published $MODE build"
@@ -129,4 +137,12 @@ jobs:
             echo '```console'
             echo "$INSTALL"
             echo '```'
+            if [ "$MODE" != "stable" ]; then
+              echo
+              echo "Run once with npx:"
+              echo
+              echo '```console'
+              echo "$NPX"
+              echo '```'
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
