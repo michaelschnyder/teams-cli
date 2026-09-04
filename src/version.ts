@@ -53,14 +53,13 @@ if (typeof metadata.name !== "string" || typeof metadata.version !== "string") {
 }
 const packageName = metadata.name;
 const cliVersion = metadata.version;
-const defaultRepositoryUrl = `https://github.com/${packageName.startsWith("@") ? packageName.slice(1) : packageName}`;
-
 function repositoryUrl(value: unknown): string {
   const raw = typeof value === "string"
     ? value
     : value && typeof value === "object" && typeof (value as { url?: unknown }).url === "string"
       ? (value as { url: string }).url
-      : defaultRepositoryUrl;
+      : undefined;
+  if (!raw) throw new Error("Installed package repository metadata is invalid");
   return raw.replace(/^git\+/, "").replace(/\.git$/, "");
 }
 

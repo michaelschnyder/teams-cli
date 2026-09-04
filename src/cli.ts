@@ -661,7 +661,6 @@ export function createProgram(options: ProgramOptions = {}): Command {
 
   const versionOptions = {
     ...(options.storageRoot ? { storageRoot: options.storageRoot } : {}),
-    confirm: interactiveAuth.confirm,
     ...(options.fetcher ? { fetcher: options.fetcher } : {}),
     ...(options.environment ? { environment: options.environment } : {}),
   };

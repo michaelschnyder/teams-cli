@@ -87,8 +87,8 @@ async function main() {
   const actor = process.env.GITHUB_ACTOR ?? "unknown";
   let version = packageMetadata.version;
   let tag = "latest";
-  let branch = process.env.GITHUB_REF_NAME ?? git("rev-parse", "--abbrev-ref", "HEAD");
-  let commit = process.env.GITHUB_SHA ?? git("rev-parse", "HEAD");
+  let branch = process.env.SNAPSHOT_BRANCH ?? process.env.GITHUB_REF_NAME ?? git("rev-parse", "--abbrev-ref", "HEAD");
+  let commit = mode === "snapshot" ? git("rev-parse", "HEAD") : process.env.GITHUB_SHA ?? git("rev-parse", "HEAD");
   let author = cleanText(git("show", "-s", "--format=%an <%ae>", commit), 300);
   let triggerKind = "release";
   let releaseNotes;
@@ -125,12 +125,16 @@ async function main() {
         url: pull.html_url,
       };
     } else {
-      if (process.env.GITHUB_REF_TYPE && process.env.GITHUB_REF_TYPE !== "branch") {
-        throw new Error("Snapshots can only be published from repository branches");
+      if (!process.env.SNAPSHOT_BRANCH || process.env.GITHUB_REF !== "refs/heads/main") {
+        throw new Error("Snapshots must be dispatched from the main-branch workflow for a named repository branch");
       }
       const permission = await github(`/repos/${repository}/collaborators/${encodeURIComponent(actor)}/permission`);
       if (!["admin", "maintain", "write"].includes(permission.permission)) {
         throw new Error(`${actor} does not have permission to publish snapshots`);
+      }
+      const repositoryBranch = await github(`/repos/${repository}/branches/${encodeURIComponent(branch)}`);
+      if (repositoryBranch.commit?.sha !== commit) {
+        throw new Error(`Checked-out commit does not match repository branch ${branch}`);
       }
       triggerKind = "manual-snapshot";
       tag = snapshotTag(branch);

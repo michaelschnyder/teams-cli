@@ -42,7 +42,7 @@ Auth stores four credentials: an OAuth access token for the Skype resource, an e
 
 `policy-editor.ts` (`teams-cli policy edit`) is a short-lived loopback HTTP + WebSocket server that authors policy files; it authenticates with a per-run token and serves `policy-editor-client.js`. Its authenticated discovery operations go through `withDataSession`. The browser gets policy data and sanitized discovery labels only—never message content—and all validation and atomic writes stay server-side. Active and filesystem-read-only policies cannot be saved directly through the browser editor.
 
-Release-support modules are independent of the data path: `update.ts` (detached hourly npm registry check), `upgrade.ts` (global npm install without a shell), `skills.ts` + `src/skills/teams-cli/SKILL.md` (the agent skill shipped in the tarball and installed into detected agent environments).
+Release-support modules are independent of the data path: `update.ts` (detached hourly npm registry check), `settings.ts` (persistent notification-channel selection), and `skills.ts` + `src/skills/teams-cli/SKILL.md` (the agent skill shipped in the tarball and installed into detected agent environments).
 
 ## Invariants
 

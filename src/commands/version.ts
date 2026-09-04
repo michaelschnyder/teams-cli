@@ -3,7 +3,7 @@ import { Option } from "commander";
 import { stripVTControlCharacters } from "node:util";
 import { storagePaths } from "../storage.js";
 import { resolveUpdateChannel, saveUpdateChannel, type UpdateChannel } from "../settings.js";
-import { checkForUpdate, isNpxExecution, latestForChannel, updateChecksDisabled, type UpdateCandidate } from "../update.js";
+import { checkForUpdate, isNpxExecution, updateChecksDisabled, type UpdateCandidate } from "../update.js";
 import { BUILD_INFO, CLI_VERSION, PACKAGE_NAME, type BuildInfo } from "../version.js";
 
 export type VersionCommandOptions = {
@@ -50,6 +50,7 @@ export function renderVersion(
     if (candidate.summary?.title) lines.push(safe(candidate.summary.title));
     if (candidate.summary?.summary) lines.push(safe(candidate.summary.summary));
     if (candidate.summary?.url) lines.push(safe(candidate.summary.url));
+    lines.push(`Update with the package manager and installation scope that installed the CLI, targeting ${PACKAGE_NAME}@${candidate.version}.`);
   } else if (updateStatus === "current") {
     lines.push("", "No update is currently available.");
   }
@@ -83,7 +84,7 @@ async function versionDetails(options: VersionCommandOptions & {
     return;
   }
   stdout.write(renderVersion(BUILD_INFO, channel, candidate, updateStatus));
-  if (updateStatus === "pinned") stderr.write("Snapshot builds are pinned. Switch to stable or canary explicitly to leave this snapshot.\n");
+  if (updateStatus === "pinned") stderr.write("Snapshot builds are pinned. Replace this build explicitly through your package manager to leave the snapshot.\n");
   if (updateStatus === "npx") stderr.write("This temporary npx execution manages its version through the package spec, not the CLI updater.\n");
   if (updateStatus === "unavailable") stderr.write("The npm registry could not be checked; installed build information is still complete.\n");
 }
@@ -92,41 +93,28 @@ async function changeChannel(channel: UpdateChannel, options: VersionCommandOpti
   const environment = options.environment ?? process.env;
   if (isNpxExecution(environment)) {
     throw new Error(
-      `Cannot update persistent channel settings from npx. Run \`npx --prefer-online ${PACKAGE_NAME}@${channel === "stable" ? "latest" : "canary"} --version\` instead.`,
+      `Cannot change persistent settings from npx. Run \`npx --prefer-online ${PACKAGE_NAME}@${channel === "stable" ? "latest" : "canary"} --version\` instead.`,
     );
   }
   const paths = storagePaths(options.storageRoot);
   await saveUpdateChannel(paths, channel);
-  (options.stdout ?? process.stdout).write(`teams-cli now follows the ${channel} channel for update checks.\n`);
-}
-
-async function upgradeCurrent(options: VersionCommandOptions): Promise<void> {
-  const environment = options.environment ?? process.env;
-  if (isNpxExecution(environment)) {
-    throw new Error(`Cannot upgrade a temporary npx execution. Run \`npx --prefer-online ${PACKAGE_NAME}@latest --version\` instead.`);
-  }
-  if (BUILD_INFO.channel === "snapshot") {
-    throw new Error("Snapshot builds are pinned. Use `teams-cli version --channel stable` or `--channel canary` to leave this snapshot.");
-  }
-  const paths = storagePaths(options.storageRoot);
-  const channel = await resolveUpdateChannel({ paths, environment, installedChannel: BUILD_INFO.channel });
-  const candidate = await latestForChannel(channel, options.fetcher);
-  (options.stderr ?? process.stderr).write(
-    `Automatic self-upgrade is disabled. Upgrade ${PACKAGE_NAME} to ${candidate.version} using your package manager in the same installation scope (global or project).\n`,
+  const tag = channel === "stable" ? "latest" : "canary";
+  (options.stdout ?? process.stdout).write(
+    `teams-cli now checks the ${channel} channel. Update with the package manager and installation scope that installed the CLI, targeting ${PACKAGE_NAME}@${tag}.\n`,
   );
+  if (BUILD_INFO.channel === "snapshot") {
+    (options.stderr ?? process.stderr).write("This installed snapshot remains pinned until you replace it through your package manager.\n");
+  }
 }
 
 export function registerVersionCommand(program: Command, options: VersionCommandOptions = {}): void {
   program.command("version")
-    .description("Show build provenance, manage the update channel, or show upgrade guidance")
-    .option("--upgrade", "Show the newest version from the effective channel and manual upgrade guidance")
-    .addOption(new Option("--channel <channel>", "Switch the saved update channel").choices(["stable", "canary"]))
+    .description("Show build provenance or manage the update-notification channel")
+    .addOption(new Option("--channel <channel>", "Select the update-notification channel").choices(["stable", "canary"]))
     .option("--json", "Output structured build and update information")
-    .action(async (commandOptions: { upgrade?: boolean; channel?: UpdateChannel; json?: boolean }) => {
-      if (commandOptions.channel && commandOptions.upgrade) throw new Error("--channel cannot be combined with --upgrade");
-      if (commandOptions.json && (commandOptions.channel || commandOptions.upgrade)) throw new Error("--json cannot be combined with --channel or --upgrade");
+    .action(async (commandOptions: { channel?: UpdateChannel; json?: boolean }) => {
+      if (commandOptions.json && commandOptions.channel) throw new Error("--json cannot be combined with --channel");
       if (commandOptions.channel) return changeChannel(commandOptions.channel, options);
-      if (commandOptions.upgrade) return upgradeCurrent(options);
       return versionDetails({ ...options, json: commandOptions.json === true });
     });
 }

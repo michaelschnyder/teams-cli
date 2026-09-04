@@ -18,4 +18,4 @@ Passwords are accepted only from an explicit helper during login and are never p
 
 Update checks are advisory and isolated from normal command execution. A detached process contacts only the npm package metadata endpoint at most hourly, uses a short timeout, and writes version-only state atomically with owner-only permissions. Checks are disabled in CI and can be opted out of entirely.
 
-The self-upgrade command invokes npm directly without a shell. It refreshes only skill destinations recorded by earlier successful CLI-managed installations. Packaged skills contain instructions and examples but no executable scripts or pre-authorized tools.
+The CLI never invokes a package manager or mutates global or project dependencies. Update notices identify the exact package version and leave installation scope and package-manager behavior under user control. Packaged skills contain instructions and examples but no executable scripts or pre-authorized tools.

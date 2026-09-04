@@ -24,16 +24,15 @@ test("sanitizes provenance and release text rendered in a terminal", () => {
     releaseNotes: { title: "Useful\u0007 release", body: "Details" },
   }, "canary", null);
   assert.match(rendered, /Source author: Ada/);
-  assert.doesNotMatch(rendered, /\u001b|\u0007/);
+  assert.doesNotMatch(rendered, /\[31m|\u001b|\u0007/);
 });
 
-test("refuses upgrade and channel mutation from npx", async () => {
+test("refuses persistent channel mutation from npx", async () => {
   const program = new Command().exitOverride();
   registerVersionCommand(program, {
     environment: { npm_command: "exec", npm_lifecycle_event: "npx" },
   });
-  await assert.rejects(program.parseAsync(["node", "test", "version", "--upgrade"]), /temporary npx execution/);
-  await assert.rejects(program.parseAsync(["node", "test", "version", "--channel", "canary"]), /Cannot update persistent channel settings from npx/);
+  await assert.rejects(program.parseAsync(["node", "test", "version", "--channel", "canary"]), /Cannot change persistent settings from npx/);
 });
 
 test("validates complete packaged build provenance", () => {
@@ -54,18 +53,21 @@ test("validates complete packaged build provenance", () => {
   assert.equal(parseBuildInfo(info, "1.2.4"), null);
 });
 
-test("persists channel changes without mutating the installation", async () => {
+test("persists the notification channel without fetching or changing the installation", async () => {
   const root = await mkdtemp(join(tmpdir(), "teams-cli-version-"));
   try {
+    let output = "";
     const program = new Command().exitOverride();
     registerVersionCommand(program, {
       storageRoot: root,
       environment: {},
-      stdout: { write: () => true },
+      fetcher: async () => { throw new Error("channel changes must not contact npm"); },
+      stdout: { write: (value) => { output += String(value); return true; } },
       stderr: { write: () => true },
     });
     await program.parseAsync(["node", "test", "version", "--channel", "canary"]);
     assert.deepEqual(await loadSettings(storagePaths(root)), { version: 1, updateChannel: "canary" });
+    assert.match(output, /@michaelschnyder\/teams-cli@canary/);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

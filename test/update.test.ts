@@ -76,6 +76,7 @@ test("caches a channel result and shows its release title on the next invocation
   });
   assert.match(stderr, /0\.1\.0 → 0\.2\.0/);
   assert.match(stderr, /Useful release/);
+  assert.match(stderr, /@michaelschnyder\/teams-cli@0\.2\.0/);
   assert.equal(spawned, 0);
   assert.equal((await loadUpdateState(file))?.pendingVersion, undefined);
 });

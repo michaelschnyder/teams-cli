@@ -43,6 +43,7 @@ test("exposes login plus the grouped CLI commands", () => {
   assert.match(program.options.find((option) => option.long === "--user")?.description ?? "", /Optional/);
   assert.deepEqual(program.commands.map((command) => command.name()), ["version", "skills", "login", "auth", "profile", "policy", "person", "chat", "channel", "message"]);
   const command = (name: string) => program.commands.find((candidate) => candidate.name() === name);
+  assert.deepEqual(command("version")?.options.map((option) => option.long), ["--channel", "--json"]);
   assert.deepEqual(
     command("auth")?.commands.map((child) => child.name()),
     ["login", "refresh", "whoami", "tokens", "logout"],

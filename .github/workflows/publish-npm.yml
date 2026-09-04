@@ -9,6 +9,10 @@ on:
     types: [completed]
   workflow_dispatch:
     inputs:
+      ref:
+        description: Repository branch to publish as a snapshot
+        required: true
+        type: string
       notes:
         description: Optional notes for a snapshot without an open pull request
         required: false
@@ -43,10 +47,12 @@ jobs:
             echo "number=$number" >> "$GITHUB_OUTPUT"
           fi
   verify:
-    if: github.event_name != 'workflow_run'
+    if: >-
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
     uses: ./.github/workflows/verify-package.yml
     with:
-      source_ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.sha }}
+      source_ref: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.ref }}
       operating_systems: '["ubuntu-latest"]'
   publish:
     if: >-
@@ -83,7 +89,7 @@ jobs:
       - name: Checkout publication source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.ref }}
           persist-credentials: false
       - name: Setup latest LTS Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -98,19 +104,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ github.token }}
           CANARY_PULL_REQUEST: ${{ needs.resolve-canary.outputs.pull_request }}
+          SNAPSHOT_BRANCH: ${{ inputs.ref }}
           SNAPSHOT_NOTES: ${{ inputs.notes }}
         run: node scripts/prepare-publication.mjs "${{ steps.publication.outputs.mode }}"
       - name: Build and validate package
         run: npm run build && npm run package:check && npm run package:smoke
       - name: Publish public package
         env:
-          NPM_BOOTSTRAP_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
           PUBLISH_TAG: ${{ steps.prepared.outputs.tag }}
-        run: |
-          if [ -n "$NPM_BOOTSTRAP_TOKEN" ]; then
-            npm config set //registry.npmjs.org/:_authToken "$NPM_BOOTSTRAP_TOKEN" --location=user
-          fi
-          npm publish --ignore-scripts --access public --tag "$PUBLISH_TAG"
+        run: npm publish --ignore-scripts --access public --tag "$PUBLISH_TAG"
       - name: Publish installation summary
         env:
           MODE: ${{ steps.prepared.outputs.mode }}

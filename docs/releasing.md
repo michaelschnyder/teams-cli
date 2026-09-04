@@ -9,20 +9,8 @@ Before the first release:
 1. Make the repository public so npm provenance can reference it.
 2. Protect `main` and require the CI and CodeQL checks.
 3. Enable secret scanning and push protection.
-4. Create a GitHub environment named `npm`. Allow tags, `main`, and repository feature branches because the workflow itself restricts each publication mode and snapshot actors.
+4. Create a GitHub environment named `npm`. Allow only the `main` branch and tags matching `v*`. Snapshot dispatches run through the workflow on `main`, validate the requested same-repository branch, and check that the actor has write, maintain, or admin permission before entering the publication steps.
 5. Enable two-factor authentication on the npm maintainer account.
-
-## First publication
-
-npm cannot configure a trusted publisher until the package exists. Bootstrap `0.1.0` once:
-
-1. Create a short-lived granular npm token that can create the public package in the `@michaelschnyder` scope and can bypass publish 2FA for this one automated run.
-2. Add it to the protected `npm` environment as `NPM_BOOTSTRAP_TOKEN`.
-3. Confirm `npm run check`, `npm test`, `npm run build`, `npm run package:check`, and `npm run package:smoke` pass on a clean checkout.
-4. Create and publish the GitHub Release `v0.1.0`.
-5. Confirm the workflow and npm provenance succeed.
-
-Immediately afterward, delete the GitHub secret and revoke the npm token.
 
 ## Configure trusted publishing
 
@@ -60,6 +48,6 @@ teams-cli version --channel canary
 
 ## Branch snapshots
 
-Repository contributors with write, maintain, or admin permission can run the publish workflow manually against a repository branch. Fork refs are not accepted. The workflow publishes an immutable `snapshot` prerelease, associates an npm tag with the selected branch, and prints the exact install command in its summary.
+Repository contributors with write, maintain, or admin permission can run the publish workflow from `main` and enter a repository branch to snapshot. The workflow verifies that the requested branch and checked-out commit belong to this repository; fork refs and dispatches using a modified branch workflow are not accepted. It publishes an immutable `snapshot` prerelease, associates an npm tag with the selected branch, and prints the exact install command in its summary.
 
-Snapshots never update automatically. Testers leave a snapshot by explicitly switching to `stable` or `canary`.
+Snapshots never update automatically. Testers leave a snapshot by explicitly installing `latest` or `canary` through their package manager and selecting the corresponding notification channel.

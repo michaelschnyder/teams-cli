@@ -176,7 +176,7 @@ export async function prepareUpdateNotification(options: {
     const description = state.pendingSummary?.title ? ` ${state.pendingSummary.title}.` : "";
     (options.stderr ?? process.stderr).write(
       `A new teams-cli ${channel} version is available: ${options.currentVersion} → ${state.pendingVersion}.${description} ` +
-      `Upgrade ${PACKAGE_NAME} with your package manager in the same installation scope.\n`,
+      `Update through the package manager and installation scope that installed it, targeting ${PACKAGE_NAME}@${state.pendingVersion}.\n`,
     );
     const consumed = { ...state };
     delete consumed.pendingVersion;
