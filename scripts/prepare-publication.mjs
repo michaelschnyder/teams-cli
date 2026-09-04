@@ -31,6 +31,14 @@ export function prereleaseVersion(base, mode, runNumber, runAttempt, commit) {
   return `${base}-${mode}.${runNumber}.${runAttempt}.g${commit.slice(0, 8).toLowerCase()}`;
 }
 
+export function canarySourceCommit(checkedOutCommit, workflowCommit) {
+  if (!workflowCommit) throw new Error("Canaries require the successfully tested main-branch commit");
+  if (checkedOutCommit.toLowerCase() !== workflowCommit.toLowerCase()) {
+    throw new Error("Checked-out commit does not match the successfully tested main-branch commit");
+  }
+  return checkedOutCommit;
+}
+
 export function publicationCommands(name, mode, version) {
   if (!new Set(["stable", "canary", "snapshot"]).has(mode)) throw new Error(`Expected stable, canary, or snapshot mode, received ${mode}`);
   if (!semver.valid(version)) throw new Error(`Publication version must be valid semver, received ${version}`);
@@ -99,8 +107,9 @@ async function main() {
   let version = packageMetadata.version;
   let tag = "latest";
   let branch = process.env.SNAPSHOT_BRANCH ?? process.env.GITHUB_REF_NAME ?? git("rev-parse", "--abbrev-ref", "HEAD");
-  let commit = mode === "snapshot" ? git("rev-parse", "HEAD") : process.env.GITHUB_SHA ?? git("rev-parse", "HEAD");
-  let author = cleanText(git("show", "-s", "--format=%an <%ae>", commit), 300);
+  const checkedOutCommit = git("rev-parse", "HEAD");
+  let commit = checkedOutCommit;
+  let author;
   let triggerKind = "release";
   let releaseNotes;
   let associatedPullRequest;
@@ -123,10 +132,9 @@ async function main() {
         ? await github(`/repos/${repository}/pulls/${workflowPullNumber}`)
         : undefined);
       if (!pull?.merged) throw new Error("Canaries require a merged pull request event");
-      commit = event.workflow_run?.head_sha ?? pull.merge_commit_sha;
-      if (!commit) throw new Error("Canaries require the successfully tested main-branch commit");
+      commit = canarySourceCommit(checkedOutCommit, event.workflow_run?.head_sha ?? pull.merge_commit_sha);
       branch = pull.head.ref;
-      author = pull.user?.login ?? author;
+      author = pull.user?.login;
       associatedPullRequest = pull;
       triggerKind = "merged-pull-request";
       tag = "canary";
@@ -165,6 +173,8 @@ async function main() {
     }
     version = prereleaseVersion(base, mode, runNumber, runAttempt, commit);
   }
+
+  author ??= cleanText(git("show", "-s", "--format=%an <%ae>", commit), 300);
 
   const pullRequest = associatedPullRequest?.number ?? undefined;
   const buildInfo = {
