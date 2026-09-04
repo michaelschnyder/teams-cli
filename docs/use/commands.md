@@ -8,9 +8,11 @@ The default session created by `teams-cli login` or `teams-cli auth login` is us
 teams-cli --version
 teams-cli version
 teams-cli version --json
+teams-cli version --upgrade
+teams-cli version --channel canary
 ```
 
-When piped, `--version` prints only semantic version text. In a terminal, version output includes the installed channel, local build provenance, associated release notes, and any available update. The policy editor shows the same exact version in its footer.
+When piped, `--version` prints only semantic version text. In a terminal, version output includes the installed channel, local build provenance, associated release notes, and any available update. A verified global npm installation can accept the interactive update offer or use `version --upgrade`; npx, snapshots, project dependencies, and installations owned by another package manager are not changed automatically. Use an explicit `--channel stable|canary` to replace a global npm installation and persist that channel after installation succeeds. The policy editor shows the same exact version in its footer.
 
 ## Diagnose the local setup
 

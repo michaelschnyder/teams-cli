@@ -109,7 +109,7 @@ Person, chat, channel, and message commands support `--json`. JSON payloads stay
 | Command | Purpose | Examples and details |
 | --- | --- | --- |
 | `login` | Sign in using the default session; alias for `auth login` | [Authentication](docs/use/authentication.md) |
-| `version` | Inspect build provenance, check for updates, or select the notification channel | [Installation and upgrades](docs/use/installation.md) |
+| `version` | Inspect build provenance, install updates, or switch stable/canary channels | [Installation and upgrades](docs/use/installation.md) |
 | `skills` | List, locate, install, and refresh the packaged agent skill | [Agent skill installation](docs/use/agent-skills.md) |
 | `doctor` | Diagnose the local runtime, browser, session, and managed skills without changing them | [Installation and upgrades](docs/use/installation.md#troubleshooting) |
 | `auth` | Login, refresh, inspect, export tokens, or logout | [Authentication](docs/use/authentication.md) |

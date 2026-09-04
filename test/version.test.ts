@@ -5,9 +5,18 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { registerVersionCommand, renderVersion, showAdaptiveVersion } from "../src/commands/version.js";
-import { loadSettings } from "../src/settings.js";
+import { loadSettings, saveUpdateChannel } from "../src/settings.js";
 import { storagePaths } from "../src/storage.js";
-import { parseBuildInfo } from "../src/version.js";
+import type { UpgradeOptions } from "../src/upgrade.js";
+import { parseBuildInfo, type BuildChannel, type BuildInfo } from "../src/version.js";
+
+function installedBuild(channel: BuildChannel, version: string): BuildInfo {
+  return { schemaVersion: 1, version, channel, trigger: { kind: "local" } };
+}
+
+function manifest(version: string): Response {
+  return new Response(JSON.stringify({ version }), { status: 200, headers: { "content-type": "application/json" } });
+}
 
 test("keeps adaptive version output terse outside a TTY", async () => {
   let output = "";
@@ -27,12 +36,13 @@ test("sanitizes provenance and release text rendered in a terminal", () => {
   assert.doesNotMatch(rendered, /\[31m|\u001b|\u0007/);
 });
 
-test("refuses persistent channel mutation from npx", async () => {
+test("refuses upgrade and channel mutation from npx", async () => {
   const program = new Command().exitOverride();
   registerVersionCommand(program, {
     environment: { npm_command: "exec", npm_lifecycle_event: "npx" },
   });
-  await assert.rejects(program.parseAsync(["node", "test", "version", "--channel", "canary"]), /Cannot change persistent settings from npx/);
+  await assert.rejects(program.parseAsync(["node", "test", "version", "--upgrade"]), /temporary npx execution/);
+  await assert.rejects(program.parseAsync(["node", "test", "version", "--channel", "canary"]), /Cannot switch an installation channel from npx/);
 });
 
 test("validates complete packaged build provenance", () => {
@@ -53,21 +63,150 @@ test("validates complete packaged build provenance", () => {
   assert.equal(parseBuildInfo(info, "1.2.4"), null);
 });
 
-test("persists the notification channel without fetching or changing the installation", async () => {
+test("switches the installed channel and persists it only after installation succeeds", async () => {
   const root = await mkdtemp(join(tmpdir(), "teams-cli-version-"));
   try {
     let output = "";
+    let target = "";
     const program = new Command().exitOverride();
     registerVersionCommand(program, {
       storageRoot: root,
       environment: {},
-      fetcher: async () => { throw new Error("channel changes must not contact npm"); },
+      fetcher: async (input) => String(input).endsWith("/canary")
+        ? manifest("0.3.0-canary.4.1.gabcdef12")
+        : manifest("0.2.0"),
+      upgrader: async (options) => {
+        target = options.targetVersion ?? "";
+        await options.onInstalled?.();
+      },
       stdout: { write: (value) => { output += String(value); return true; } },
       stderr: { write: () => true },
     });
     await program.parseAsync(["node", "test", "version", "--channel", "canary"]);
     assert.deepEqual(await loadSettings(storagePaths(root)), { version: 1, updateChannel: "canary" });
-    assert.match(output, /@michaelschnyder\/teams-cli@canary/);
+    assert.equal(target, "0.3.0-canary.4.1.gabcdef12");
+    assert.match(output, /follows the canary channel/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("does not persist a channel when installation fails", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-cli-version-"));
+  try {
+    const program = new Command().exitOverride();
+    registerVersionCommand(program, {
+      storageRoot: root,
+      environment: {},
+      fetcher: async () => manifest("0.3.0-canary.4.1.gabcdef12"),
+      upgrader: async () => { throw new Error("install failed"); },
+      stdout: { write: () => true },
+      stderr: { write: () => true },
+    });
+    await assert.rejects(program.parseAsync(["node", "test", "version", "--channel", "canary"]), /install failed/);
+    assert.deepEqual(await loadSettings(storagePaths(root)), { version: 1 });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("upgrades a canary installation to the newest effective-channel version", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-cli-version-"));
+  try {
+    await saveUpdateChannel(storagePaths(root), "canary");
+    let target = "";
+    const program = new Command().exitOverride();
+    registerVersionCommand(program, {
+      storageRoot: root,
+      environment: {},
+      buildInfo: installedBuild("canary", "0.2.0-canary.1.1.g11111111"),
+      fetcher: async (input) => String(input).endsWith("/canary")
+        ? manifest("0.2.0-canary.5.1.g55555555")
+        : manifest("0.1.0"),
+      upgrader: async (options) => { target = options.targetVersion ?? ""; },
+      stdout: { write: () => true },
+      stderr: { write: () => true },
+    });
+    await program.parseAsync(["node", "test", "version", "--upgrade"]);
+    assert.equal(target, "0.2.0-canary.5.1.g55555555");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("keeps snapshot upgrades pinned while allowing an explicit channel switch", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-cli-version-"));
+  try {
+    let calls = 0;
+    const options = {
+      storageRoot: root,
+      environment: {},
+      buildInfo: installedBuild("snapshot", "0.2.0-snapshot.1.1.g11111111"),
+      fetcher: async () => manifest("0.2.0"),
+      upgrader: async (upgradeOptions: UpgradeOptions) => {
+        calls += 1;
+        await upgradeOptions.onInstalled?.();
+      },
+      stdout: { write: () => true },
+      stderr: { write: () => true },
+    };
+    const pinned = new Command().exitOverride();
+    registerVersionCommand(pinned, options);
+    await assert.rejects(pinned.parseAsync(["node", "test", "version", "--upgrade"]), /Snapshot builds are pinned/);
+    assert.equal(calls, 0);
+
+    const switcher = new Command().exitOverride();
+    registerVersionCommand(switcher, options);
+    await switcher.parseAsync(["node", "test", "version", "--channel", "stable"]);
+    assert.equal(calls, 1);
+    assert.equal((await loadSettings(storagePaths(root))).updateChannel, "stable");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offers an interactive upgrade only for a verified global npm installation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-cli-version-"));
+  try {
+    let confirmations = 0;
+    let upgrades = 0;
+    const program = new Command().exitOverride();
+    registerVersionCommand(program, {
+      storageRoot: root,
+      environment: {},
+      buildInfo: installedBuild("stable", "0.1.0"),
+      fetcher: async () => manifest("0.2.0"),
+      canUpgrade: async () => true,
+      confirm: async () => {
+        confirmations += 1;
+        return true;
+      },
+      upgrader: async () => { upgrades += 1; },
+      stdout: { isTTY: true, write: () => true },
+      stderr: { isTTY: true, write: () => true },
+    });
+    await program.parseAsync(["node", "test", "version"]);
+    assert.equal(confirmations, 1);
+    assert.equal(upgrades, 1);
+
+    const local = new Command().exitOverride();
+    registerVersionCommand(local, {
+      storageRoot: root,
+      environment: {},
+      buildInfo: installedBuild("stable", "0.1.0"),
+      fetcher: async () => manifest("0.2.0"),
+      canUpgrade: async () => false,
+      confirm: async () => {
+        confirmations += 1;
+        return true;
+      },
+      upgrader: async () => { upgrades += 1; },
+      stdout: { isTTY: true, write: () => true },
+      stderr: { isTTY: true, write: () => true },
+    });
+    await local.parseAsync(["node", "test", "version"]);
+    assert.equal(confirmations, 1);
+    assert.equal(upgrades, 1);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
