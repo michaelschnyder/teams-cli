@@ -3,48 +3,130 @@ name: Publish to npm
 on:
   release:
     types: [published]
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Repository branch to publish as a snapshot
+        required: true
+        type: string
+      notes:
+        description: Optional notes for a snapshot without an open pull request
+        required: false
+        type: string
 
 permissions:
   contents: read
-  id-token: write
-
-concurrency:
-  group: npm-publish
-  cancel-in-progress: false
+  pull-requests: read
 
 jobs:
+  resolve-canary:
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    outputs:
+      pull_request: ${{ steps.pull-request.outputs.number }}
+    steps:
+      - name: Resolve merged pull request
+        id: pull-request
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          number="$(gh api "repos/$REPOSITORY/commits/$SOURCE_SHA/pulls" --jq '[.[] | select(.merged_at != null and .base.ref == "main")][0].number // empty')"
+          if [ -n "$number" ]; then
+            echo "number=$number" >> "$GITHUB_OUTPUT"
+          fi
+  verify:
+    if: >-
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    uses: ./.github/workflows/verify-package.yml
+    with:
+      source_ref: ${{ github.event_name == 'release' && github.event.release.tag_name || inputs.ref }}
+      operating_systems: '["ubuntu-latest"]'
   publish:
+    if: >-
+      always() &&
+      ((github.event_name == 'workflow_run' &&
+        needs.resolve-canary.result == 'success' &&
+        needs.resolve-canary.outputs.pull_request != '') ||
+       (github.event_name != 'workflow_run' &&
+        needs.verify.result == 'success' &&
+        (github.event_name != 'workflow_dispatch' || (github.ref == 'refs/heads/main' && github.ref_protected))))
+    needs: [resolve-canary, verify]
     runs-on: ubuntu-latest
     environment: npm
+    concurrency:
+      group: npm-publish
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
     steps:
-      - name: Checkout release tag
+      - name: Select publication mode
+        id: publication
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          case "$EVENT_NAME" in
+            release) echo "mode=stable" >> "$GITHUB_OUTPUT" ;;
+            workflow_run) echo "mode=canary" >> "$GITHUB_OUTPUT" ;;
+            workflow_dispatch) echo "mode=snapshot" >> "$GITHUB_OUTPUT" ;;
+            *) exit 1 ;;
+          esac
+      - name: Checkout publication source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || inputs.ref }}
           persist-credentials: false
-      - name: Setup Node.js
+      - name: Setup latest LTS Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24
+          node-version: lts/*
+          registry-url: https://registry.npmjs.org
           package-manager-cache: false
-      - name: Require matching package version and release tag
-        env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: node -e "const p=require('./package.json'); if (process.env.RELEASE_TAG !== 'v'+p.version) throw new Error('Release tag must equal v'+p.version)"
       - name: Install dependencies
         run: npm ci --ignore-scripts
-      - name: Type-check and test
-        run: npm run check && npm test
+      - name: Prepare version and build provenance
+        id: prepared
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          CANARY_PULL_REQUEST: ${{ needs.resolve-canary.outputs.pull_request }}
+          SNAPSHOT_BRANCH: ${{ inputs.ref }}
+          SNAPSHOT_NOTES: ${{ inputs.notes }}
+        run: node scripts/prepare-publication.mjs "${{ steps.publication.outputs.mode }}"
       - name: Build and validate package
         run: npm run build && npm run package:check && npm run package:smoke
-      - name: Audit production dependencies
-        run: npm audit --omit=dev --audit-level=high
-      - name: Configure one-time bootstrap credential
-        env:
-          NPM_BOOTSTRAP_TOKEN: ${{ secrets.NPM_BOOTSTRAP_TOKEN }}
-        run: |
-          if [ -n "$NPM_BOOTSTRAP_TOKEN" ]; then
-            npm config set //registry.npmjs.org/:_authToken "$NPM_BOOTSTRAP_TOKEN" --location=user
-          fi
       - name: Publish public package
-        run: npm publish --ignore-scripts --access public
+        env:
+          PUBLISH_TAG: ${{ steps.prepared.outputs.tag }}
+        run: npm publish --ignore-scripts --access public --tag "$PUBLISH_TAG"
+      - name: Publish installation summary
+        env:
+          MODE: ${{ steps.prepared.outputs.mode }}
+          VERSION: ${{ steps.prepared.outputs.version }}
+          INSTALL: ${{ steps.prepared.outputs.install }}
+        run: |
+          {
+            echo "## Published $MODE build"
+            echo
+            echo "Version: \`$VERSION\`"
+            echo
+            echo "Install with:"
+            echo
+            echo '```console'
+            echo "$INSTALL"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

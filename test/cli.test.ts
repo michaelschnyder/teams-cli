@@ -13,7 +13,6 @@ import {
   selectedSendTarget,
   selectedTarget,
 } from "../src/cli.js";
-import { CLI_VERSION } from "../src/version.js";
 import { initializePolicy, resolvePolicyByName } from "../src/policy.js";
 import { storagePaths, type StoredSession } from "../src/storage.js";
 import { saveSession } from "../src/storage.js";
@@ -39,11 +38,12 @@ const session: StoredSession = {
 
 test("exposes login plus the grouped CLI commands", () => {
   const program = createProgram();
-  assert.equal(program.version(), CLI_VERSION);
+  assert.ok(program.options.some((option) => option.long === "--version"));
   assert.match(program.options.find((option) => option.long === "--tenant")?.description ?? "", /Optional/);
   assert.match(program.options.find((option) => option.long === "--user")?.description ?? "", /Optional/);
   assert.deepEqual(program.commands.map((command) => command.name()), ["version", "skills", "login", "auth", "profile", "policy", "person", "chat", "channel", "message"]);
   const command = (name: string) => program.commands.find((candidate) => candidate.name() === name);
+  assert.deepEqual(command("version")?.options.map((option) => option.long), ["--channel", "--json"]);
   assert.deepEqual(
     command("auth")?.commands.map((child) => child.name()),
     ["login", "refresh", "whoami", "tokens", "logout"],
@@ -63,6 +63,33 @@ test("exposes login plus the grouped CLI commands", () => {
   assert.deepEqual(command("message")?.commands.map((child) => child.name()), ["list", "get", "send"]);
   assert.ok(command("message")?.commands.find((child) => child.name() === "send")?.options.some((option) => option.long === "--person"));
   assert.equal(program.commands.some((command) => command.name() === "chats"), false);
+});
+
+test("keeps piped --version terse and provides structured version metadata", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-cli-version-"));
+  let stdout = "";
+  const originalWrite = process.stdout.write;
+  process.stdout.write = ((chunk: string | Uint8Array) => {
+    stdout += chunk.toString();
+    return true;
+  }) as typeof process.stdout.write;
+  try {
+    await createProgram({ storageRoot: root, environment: {} }).parseAsync(["node", "teams-cli", "--version"]);
+    assert.equal(stdout, "0.1.0\n");
+    stdout = "";
+    await createProgram({
+      storageRoot: root,
+      environment: {},
+      fetcher: async () => new Response(JSON.stringify({ version: "0.1.0" }), { status: 200 }),
+    }).parseAsync(["node", "teams-cli", "version", "--json"]);
+    const output = JSON.parse(stdout) as { installed: { version: string; channel: string }; update: { status: string } };
+    assert.equal(output.installed.version, "0.1.0");
+    assert.equal(output.installed.channel, "local");
+    assert.equal(output.update.status, "current");
+  } finally {
+    process.stdout.write = originalWrite;
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("top-level login runs the default login flow", async () => {

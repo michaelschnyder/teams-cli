@@ -20,7 +20,7 @@ node --import tsx --test test/policy.test.ts
 node --import tsx --test --test-name-pattern "denied" test/policy.test.ts
 ```
 
-CI runs check, test, build, `npm audit --omit=dev --audit-level=high`, `package:check`, and `package:smoke`. Ubuntu covers Node 22.20 and 24; macOS and Windows cover Node 24. Windows is in the matrix, so path handling must not assume POSIX separators.
+CI runs check, test, build, `npm audit --omit=dev --audit-level=high`, `package:check`, and `package:smoke`. Ubuntu, macOS, and Windows use the latest Node.js LTS through the reusable package-verification workflow. Windows is in the matrix, so path handling must not assume POSIX separators.
 
 "E2E" means two different things here. `test/policy-e2e.test.ts` is a normal offline test (temp storage + loopback server) and runs under `npm test`. Live E2E (`npm run test:e2e`, files `test/e2e/*.e2e.ts`) hits a real Teams tenant: it needs `.env.e2e.local` (copy `.env.e2e.example`), a dedicated test tenant with users Alice and Bob, and a team `teams-cli-e2e` with channels `allowed` and `denied`. Never point it at a personal or production tenant. `npm test` never runs live tests.
 
@@ -42,7 +42,7 @@ Auth stores four credentials: an OAuth access token for the Skype resource, an e
 
 `policy-editor.ts` (`teams-cli policy edit`) is a short-lived loopback HTTP + WebSocket server that authors policy files; it authenticates with a per-run token and serves `policy-editor-client.js`. Its authenticated discovery operations go through `withDataSession`. The browser gets policy data and sanitized discovery labels only—never message content—and all validation and atomic writes stay server-side. Active and filesystem-read-only policies cannot be saved directly through the browser editor.
 
-Release-support modules are independent of the data path: `update.ts` (detached hourly npm registry check), `upgrade.ts` (global npm install without a shell), `skills.ts` + `src/skills/teams-cli/SKILL.md` (the agent skill shipped in the tarball and installed into detected agent environments).
+Release-support modules are independent of the data path: `update.ts` (detached hourly npm registry check), `settings.ts` (persistent notification-channel selection), and `skills.ts` + `src/skills/teams-cli/SKILL.md` (the agent skill shipped in the tarball and installed into detected agent environments).
 
 ## Invariants
 

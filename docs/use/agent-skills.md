@@ -36,6 +36,6 @@ Initial installation does not replace an existing `SKILL.md`; use `--force` only
 teams-cli skills reinstall
 ```
 
-Reinstallation replaces the managed `teams-cli` copy, including local edits made inside it. A successful `teams-cli version --upgrade` also refreshes recorded copies. Older managed Teams skills are consolidated into the current single skill during refresh while unrelated files in their directories are preserved.
+Reinstallation replaces the managed `teams-cli` copy, including local edits made inside it. Older managed Teams skills are consolidated into the current single skill during refresh while unrelated files in their directories are preserved.
 
 Installed skill copies live in agent-specific user or project directories rather than in `~/.teams-cli/`. Uninstalling the npm package does not remove them automatically.

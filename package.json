@@ -12,13 +12,12 @@
     "docs/releasing.md",
     "README.md",
     "SECURITY.md",
-    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
     "dev": "tsx src/cli.ts",
     "clean": "node scripts/clean.mjs",
-    "build": "npm run clean && tsc && node scripts/copy-skills.mjs && node scripts/sync-skill-versions.mjs && node scripts/make-executable.mjs",
+    "build": "npm run clean && tsc && node scripts/write-build-info.mjs && node scripts/copy-skills.mjs && node scripts/sync-skill-versions.mjs && node scripts/make-executable.mjs",
     "check": "tsc --noEmit",
     "test": "node --import tsx --test test/**/*.test.ts",
     "test:e2e": "node --import tsx --test test/e2e/*.e2e.ts",
@@ -51,11 +50,13 @@
   "dependencies": {
     "commander": "^15.0.0",
     "playwright-core": "^1.54.2",
+    "semver": "^7.8.5",
     "ws": "^8.21.3",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
-    "@types/node": "^26.3.0",
+    "@types/node": "^24.13.3",
+    "@types/semver": "^7.8.0",
     "@types/ws": "^8.18.1",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2"

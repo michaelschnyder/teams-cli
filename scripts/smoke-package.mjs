@@ -33,6 +33,10 @@ try {
   const cli = join(modules, "@michaelschnyder", "teams-cli", "dist", "cli.js");
   const version = execFileSync(process.execPath, [cli, "--version"], { encoding: "utf8", env: environment }).trim();
   if (version !== expectedVersion) throw new Error(`Installed CLI returned unexpected version ${version}`);
+  const details = JSON.parse(execFileSync(process.execPath, [cli, "version", "--json"], { encoding: "utf8", env: environment }));
+  if (details.installed?.version !== expectedVersion || details.installed?.schemaVersion !== 1) {
+    throw new Error("Installed CLI returned invalid build metadata");
+  }
   execFileSync(process.execPath, [cli, "--help"], { stdio: "ignore", env: environment });
   process.stdout.write(`Installed package smoke test passed for ${version}.\n`);
 } finally {
