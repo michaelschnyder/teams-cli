@@ -49,7 +49,7 @@ Published npm versions are immutable. If a release is defective, fix it in a new
 
 ## Canary releases
 
-Merging a pull request into `main` publishes one prerelease to the `canary` npm tag. A direct commit to `main` does not publish. The workflow uses the package version when it is already greater than npm's latest stable release; otherwise it assumes the next patch. Versions include the workflow run, attempt, and source commit, while the package embeds the pull request notes and build provenance.
+Merging a pull request into `main` publishes one prerelease to the `canary` npm tag after the resulting main-branch CI run passes on Ubuntu, macOS, and Windows. The publishing workflow consumes that successful CI result instead of repeating the operating-system matrix. A direct commit to `main` does not publish. Stable releases and manually requested snapshots run package verification on Ubuntu before publishing. The workflow uses the package version when it is already greater than npm's latest stable release; otherwise it assumes the next patch. Versions include the workflow run, attempt, and source commit, while the package embeds the pull request notes and build provenance.
 
 Install or follow this channel with:
 

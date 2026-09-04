@@ -3,9 +3,10 @@ name: Publish to npm
 on:
   release:
     types: [published]
-  pull_request:
+  workflow_run:
+    workflows: [CI]
     branches: [main]
-    types: [closed]
+    types: [completed]
   workflow_dispatch:
     inputs:
       notes:
@@ -18,14 +19,41 @@ permissions:
   pull-requests: read
 
 jobs:
+  resolve-canary:
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    outputs:
+      pull_request: ${{ steps.pull-request.outputs.number }}
+    steps:
+      - name: Resolve merged pull request
+        id: pull-request
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          number="$(gh api "repos/$REPOSITORY/commits/$SOURCE_SHA/pulls" --jq '[.[] | select(.merged_at != null and .base.ref == "main")][0].number // empty')"
+          if [ -n "$number" ]; then
+            echo "number=$number" >> "$GITHUB_OUTPUT"
+          fi
   verify:
-    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
+    if: github.event_name != 'workflow_run'
     uses: ./.github/workflows/verify-package.yml
     with:
-      source_ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event_name == 'pull_request' && github.event.pull_request.merge_commit_sha || github.sha }}
+      source_ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.sha }}
+      operating_systems: '["ubuntu-latest"]'
   publish:
-    if: github.event_name != 'pull_request' || github.event.pull_request.merged == true
-    needs: verify
+    if: >-
+      always() &&
+      ((github.event_name == 'workflow_run' &&
+        needs.resolve-canary.result == 'success' &&
+        needs.resolve-canary.outputs.pull_request != '') ||
+       (github.event_name != 'workflow_run' && needs.verify.result == 'success'))
+    needs: [resolve-canary, verify]
     runs-on: ubuntu-latest
     environment: npm
     concurrency:
@@ -44,14 +72,14 @@ jobs:
         run: |
           case "$EVENT_NAME" in
             release) echo "mode=stable" >> "$GITHUB_OUTPUT" ;;
-            pull_request) echo "mode=canary" >> "$GITHUB_OUTPUT" ;;
+            workflow_run) echo "mode=canary" >> "$GITHUB_OUTPUT" ;;
             workflow_dispatch) echo "mode=snapshot" >> "$GITHUB_OUTPUT" ;;
             *) exit 1 ;;
           esac
       - name: Checkout publication source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event_name == 'pull_request' && github.event.pull_request.merge_commit_sha || github.sha }}
+          ref: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
           persist-credentials: false
       - name: Setup latest LTS Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
@@ -65,6 +93,7 @@ jobs:
         id: prepared
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          CANARY_PULL_REQUEST: ${{ needs.resolve-canary.outputs.pull_request }}
           SNAPSHOT_NOTES: ${{ inputs.notes }}
         run: node scripts/prepare-publication.mjs "${{ steps.publication.outputs.mode }}"
       - name: Build and validate package

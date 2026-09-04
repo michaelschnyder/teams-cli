@@ -107,9 +107,13 @@ async function main() {
   } else {
     const base = nextPrereleaseBase(packageMetadata.version, await latestStable(packageMetadata.name));
     if (mode === "canary") {
-      const pull = event.pull_request;
+      const workflowPullNumber = process.env.CANARY_PULL_REQUEST ?? event.workflow_run?.pull_requests?.[0]?.number;
+      const pull = event.pull_request ?? (workflowPullNumber
+        ? await github(`/repos/${repository}/pulls/${workflowPullNumber}`)
+        : undefined);
       if (!pull?.merged || !pull.merge_commit_sha) throw new Error("Canaries require a merged pull request event");
-      commit = pull.merge_commit_sha;
+      commit = event.workflow_run?.head_sha ?? pull.merge_commit_sha;
+      if (commit !== pull.merge_commit_sha) throw new Error("Successful CI commit does not match the merged pull request");
       branch = pull.head.ref;
       author = pull.user?.login ?? author;
       associatedPullRequest = pull;
