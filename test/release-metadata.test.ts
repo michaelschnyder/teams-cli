@@ -1,7 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import semver from "semver";
-import { nextPrereleaseBase, prereleaseVersion, publicationCommands, snapshotTag } from "../scripts/prepare-publication.mjs";
+import {
+  canarySourceCommit,
+  nextPrereleaseBase,
+  prereleaseVersion,
+  publicationCommands,
+  snapshotTag,
+} from "../scripts/prepare-publication.mjs";
 
 test("infers the next patch unless package.json already targets a later release", () => {
   assert.equal(nextPrereleaseBase("0.1.0", "0.1.0"), "0.1.1");
@@ -26,6 +32,17 @@ test("creates unique valid prereleases from workflow, attempt, and commit metada
   assert.notEqual(prereleaseVersion("0.2.0", "canary", "82", "1", "1234567890abcdef"), canary);
   assert.notEqual(prereleaseVersion("0.2.0", "snapshot", "81", "1", "abcdef1234567890"), canary);
   assert.throws(() => prereleaseVersion("0.2.0", "canary", "0", "1", "abcdef1234567890"), /positive integers/);
+});
+
+test("anchors canary provenance to the successfully tested checkout", () => {
+  const testedCommit = "b92961ed48a16e5787c8516ce1f17787a217c6f9";
+  const newerDefaultBranchCommit = "054449b86e4498094dacd1e0db34899485989e81";
+  assert.equal(canarySourceCommit(testedCommit, testedCommit), testedCommit);
+  assert.throws(
+    () => canarySourceCommit(testedCommit, newerDefaultBranchCommit),
+    /does not match the successfully tested main-branch commit/,
+  );
+  assert.throws(() => canarySourceCommit(testedCommit, undefined), /require the successfully tested main-branch commit/);
 });
 
 test("creates install and npx commands for each publication channel", () => {
