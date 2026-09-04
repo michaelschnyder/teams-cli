@@ -80,20 +80,18 @@ At startup, the CLI may launch a detached npm registry check. It runs at most on
 Stable installations follow npm's `latest` tag. Switch to builds produced from newly merged pull requests with:
 
 ```bash
-npm install --global @michaelschnyder/teams-cli@canary
 teams-cli version --channel canary
 ```
 
-The npm command replaces the globally installed package, while the CLI command records which channel should be checked for update notifications in `~/.teams-cli/settings.yaml`. Switch back in the same way:
+For a global npm installation, this installs the newest canary and records the channel in `~/.teams-cli/settings.yaml` only after installation succeeds. Switch back in the same way:
 
 ```bash
-npm install --global @michaelschnyder/teams-cli@latest
 teams-cli version --channel stable
 ```
 
 `TEAMS_CLI_UPDATE_CHANNEL=stable|canary` overrides the recorded channel for the current process. Channel settings are user-wide and deliberately separate from Teams profiles and workspace policies.
 
-Contributor snapshots are installed using the exact version shown by their GitHub Actions run. Snapshots are pinned and do not perform background update checks. Replace a snapshot explicitly through the same package manager and installation scope that installed it, then select `stable` or `canary` for future notifications.
+Contributor snapshots are installed using the exact version shown by their GitHub Actions run. Snapshots are pinned: they do not perform background update checks and `version --upgrade` refuses to replace them. A globally installed snapshot can leave the pinned build through an explicit `teams-cli version --channel stable` or `--channel canary` command.
 
 Disable checks with either environment variable:
 
@@ -103,11 +101,15 @@ export NO_UPDATE_NOTIFIER=1
 export TEAMS_CLI_DISABLE_UPDATE_CHECK=1
 ```
 
-Checks are automatically disabled in CI and temporary npx executions. Inspect local build provenance and any associated release notes with `teams-cli version`, or use `teams-cli version --json` for structured output.
+Checks are automatically disabled in CI and temporary npx executions. Inspect local build provenance and any associated release notes with `teams-cli version`, or use `teams-cli version --json` for structured output. An interactive version check offers to install an available update when the running package is verified as a global npm installation. Upgrade explicitly within the effective stable or canary channel with:
 
-The CLI does not run npm or change global or project dependencies itself, because it cannot reliably determine the package manager and installation scope that installed it. Update notices provide an exact package target. Use `npm install --global` only for an existing global npm installation; for a project dependency, update it through that project's package manager instead. Refresh recorded agent-skill copies separately with `teams-cli skills reinstall` after replacing the package.
+```bash
+teams-cli version --upgrade
+```
 
-An npx execution cannot change the persistent notification channel. Request the desired package explicitly instead:
+Before making changes, the CLI asks the active npm executable for its global package root and verifies that the running package is the `teams-cli` package at that exact location. It then installs the registry's exact selected version without a command shell and refreshes managed agent-skill copies through the newly installed CLI. This prevents a project dependency, another package manager's installation, or a source checkout from being converted into a global npm package. Those installations receive an exact package target and must be updated through their owning package manager and scope.
+
+An npx execution cannot upgrade itself or change the persistent channel. Request the desired package explicitly instead:
 
 ```bash
 npx --prefer-online @michaelschnyder/teams-cli@latest --help

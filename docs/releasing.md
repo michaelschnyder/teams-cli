@@ -46,8 +46,10 @@ npm install --global @michaelschnyder/teams-cli@canary
 teams-cli version --channel canary
 ```
 
+The npm command is useful when installing canary for the first time or upgrading from a release that predates channel switching. Once the channel-aware CLI is installed globally through npm, `version --channel canary` installs the newest canary and records the selection.
+
 ## Branch snapshots
 
 Repository contributors with write, maintain, or admin permission can run the publish workflow from `main` and enter a repository branch to snapshot. Manual runs are automatically classified as snapshot publications. The workflow verifies that the requested branch and checked-out commit belong to this repository; fork refs and dispatches using a modified branch workflow are not accepted. It publishes an immutable `snapshot` prerelease, associates an npm tag with the selected branch, and prints exact global-install and npx commands in its summary. Canary summaries provide both commands as well.
 
-Snapshots never update automatically. Testers leave a snapshot by explicitly installing `latest` or `canary` through their package manager and selecting the corresponding notification channel.
+Snapshots never update automatically and `version --upgrade` refuses to replace them. Testers with a global npm installation can leave a snapshot explicitly with `version --channel stable` or `version --channel canary`; other installation scopes must use their owning package manager.
