@@ -73,11 +73,12 @@ test("keeps piped --version terse and provides structured version metadata", asy
     return true;
   }) as typeof process.stdout.write;
   try {
-    await createProgram({ storageRoot: root }).parseAsync(["node", "teams-cli", "--version"]);
+    await createProgram({ storageRoot: root, environment: {} }).parseAsync(["node", "teams-cli", "--version"]);
     assert.equal(stdout, "0.1.0\n");
     stdout = "";
     await createProgram({
       storageRoot: root,
+      environment: {},
       fetcher: async () => new Response(JSON.stringify({ version: "0.1.0" }), { status: 200 }),
     }).parseAsync(["node", "teams-cli", "version", "--json"]);
     const output = JSON.parse(stdout) as { installed: { version: string; channel: string }; update: { status: string } };

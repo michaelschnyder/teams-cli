@@ -100,6 +100,7 @@ export type ProgramOptions = {
   confirm?: ConfirmPrompt;
   loginImplementation?: LoginImplementation;
   fetcher?: typeof fetch;
+  environment?: NodeJS.ProcessEnv;
 };
 
 type InteractiveAuthSupport = {
@@ -662,6 +663,7 @@ export function createProgram(options: ProgramOptions = {}): Command {
     ...(options.storageRoot ? { storageRoot: options.storageRoot } : {}),
     confirm: interactiveAuth.confirm,
     ...(options.fetcher ? { fetcher: options.fetcher } : {}),
+    ...(options.environment ? { environment: options.environment } : {}),
   };
   registerVersionCommand(program, versionOptions);
   program.action(async () => {
