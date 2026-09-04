@@ -31,6 +31,17 @@ export function prereleaseVersion(base, mode, runNumber, runAttempt, commit) {
   return `${base}-${mode}.${runNumber}.${runAttempt}.g${commit.slice(0, 8).toLowerCase()}`;
 }
 
+export function publicationCommands(name, mode, version) {
+  if (!new Set(["stable", "canary", "snapshot"]).has(mode)) throw new Error(`Expected stable, canary, or snapshot mode, received ${mode}`);
+  if (!semver.valid(version)) throw new Error(`Publication version must be valid semver, received ${version}`);
+  const specifier = mode === "stable" ? "latest" : mode === "canary" ? "canary" : version;
+  const target = `${name}@${specifier}`;
+  return {
+    install: `npm install --global ${target}`,
+    npx: `npx --prefer-online ${target} --help`,
+  };
+}
+
 function cleanText(value, maximum = Number.POSITIVE_INFINITY) {
   return String(value ?? "").replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "").slice(0, maximum);
 }
@@ -196,7 +207,9 @@ async function main() {
   setOutput("mode", mode);
   setOutput("version", version);
   setOutput("tag", tag);
-  setOutput("install", `npm install --global ${packageMetadata.name}@${mode === "stable" ? "latest" : mode === "canary" ? "canary" : version}`);
+  const commands = publicationCommands(packageMetadata.name, mode, version);
+  setOutput("install", commands.install);
+  setOutput("npx", commands.npx);
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import semver from "semver";
-import { nextPrereleaseBase, prereleaseVersion, snapshotTag } from "../scripts/prepare-publication.mjs";
+import { nextPrereleaseBase, prereleaseVersion, publicationCommands, snapshotTag } from "../scripts/prepare-publication.mjs";
 
 test("infers the next patch unless package.json already targets a later release", () => {
   assert.equal(nextPrereleaseBase("0.1.0", "0.1.0"), "0.1.1");
@@ -26,4 +26,19 @@ test("creates unique valid prereleases from workflow, attempt, and commit metada
   assert.notEqual(prereleaseVersion("0.2.0", "canary", "82", "1", "1234567890abcdef"), canary);
   assert.notEqual(prereleaseVersion("0.2.0", "snapshot", "81", "1", "abcdef1234567890"), canary);
   assert.throws(() => prereleaseVersion("0.2.0", "canary", "0", "1", "abcdef1234567890"), /positive integers/);
+});
+
+test("creates install and npx commands for each publication channel", () => {
+  assert.deepEqual(publicationCommands("@example/cli", "stable", "0.2.0"), {
+    install: "npm install --global @example/cli@latest",
+    npx: "npx --prefer-online @example/cli@latest --help",
+  });
+  assert.deepEqual(publicationCommands("@example/cli", "canary", "0.2.0-canary.3.1.gabcdef12"), {
+    install: "npm install --global @example/cli@canary",
+    npx: "npx --prefer-online @example/cli@canary --help",
+  });
+  assert.deepEqual(publicationCommands("@example/cli", "snapshot", "0.2.0-snapshot.3.1.gabcdef12"), {
+    install: "npm install --global @example/cli@0.2.0-snapshot.3.1.gabcdef12",
+    npx: "npx --prefer-online @example/cli@0.2.0-snapshot.3.1.gabcdef12 --help",
+  });
 });

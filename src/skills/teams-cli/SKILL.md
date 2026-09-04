@@ -3,7 +3,7 @@ name: teams-cli
 description: Use teams-cli safely for Microsoft Teams authentication, discovery, reading, messaging, and policies.
 license: MIT
 metadata:
-  version: "0.1.0"
+  version: "0.2.0"
   author: teams-cli
 ---
 
