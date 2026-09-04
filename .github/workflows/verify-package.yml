@@ -12,6 +12,11 @@ on:
         required: false
         type: string
         default: '["ubuntu-latest", "macos-latest", "windows-latest"]'
+      audit:
+        description: Run the production dependency audit on Ubuntu
+        required: false
+        type: boolean
+        default: true
 
 permissions:
   contents: read
@@ -44,7 +49,7 @@ jobs:
       - name: Build
         run: npm run build
       - name: Audit production dependencies
-        if: matrix.os == 'ubuntu-latest'
+        if: inputs.audit && matrix.os == 'ubuntu-latest'
         shell: bash
         run: |
           for attempt in 1 2 3; do
