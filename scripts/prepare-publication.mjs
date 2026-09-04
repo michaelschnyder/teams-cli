@@ -111,9 +111,9 @@ async function main() {
       const pull = event.pull_request ?? (workflowPullNumber
         ? await github(`/repos/${repository}/pulls/${workflowPullNumber}`)
         : undefined);
-      if (!pull?.merged || !pull.merge_commit_sha) throw new Error("Canaries require a merged pull request event");
+      if (!pull?.merged) throw new Error("Canaries require a merged pull request event");
       commit = event.workflow_run?.head_sha ?? pull.merge_commit_sha;
-      if (commit !== pull.merge_commit_sha) throw new Error("Successful CI commit does not match the merged pull request");
+      if (!commit) throw new Error("Canaries require the successfully tested main-branch commit");
       branch = pull.head.ref;
       author = pull.user?.login ?? author;
       associatedPullRequest = pull;
