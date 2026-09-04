@@ -23,6 +23,7 @@ try {
     "dist/cli.js",
     "dist/build-info.json",
     "dist/skills/teams-cli/SKILL.md",
+    "dist/skills/teams-cli/claude-cowork.md",
     "docs/use/assets/policy-editor.png",
     "docs/releasing.md",
   ]) {

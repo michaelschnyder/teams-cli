@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -41,7 +41,7 @@ test("exposes login plus the grouped CLI commands", () => {
   assert.ok(program.options.some((option) => option.long === "--version"));
   assert.match(program.options.find((option) => option.long === "--tenant")?.description ?? "", /Optional/);
   assert.match(program.options.find((option) => option.long === "--user")?.description ?? "", /Optional/);
-  assert.deepEqual(program.commands.map((command) => command.name()), ["version", "skills", "login", "auth", "profile", "policy", "person", "chat", "channel", "message"]);
+  assert.deepEqual(program.commands.map((command) => command.name()), ["version", "skills", "doctor", "login", "auth", "profile", "policy", "person", "chat", "channel", "message"]);
   const command = (name: string) => program.commands.find((candidate) => candidate.name() === name);
   assert.deepEqual(command("version")?.options.map((option) => option.long), ["--channel", "--json"]);
   assert.deepEqual(
@@ -49,6 +49,7 @@ test("exposes login plus the grouped CLI commands", () => {
     ["login", "refresh", "whoami", "tokens", "logout"],
   );
   assert.deepEqual(command("skills")?.commands.map((child) => child.name()), ["list", "path", "install", "reinstall"]);
+  assert.deepEqual(command("doctor")?.options.map((option) => option.long), ["--json"]);
   assert.deepEqual(command("profile")?.commands.map((child) => child.name()), ["list", "show", "save", "remove"]);
   assert.deepEqual(
     command("policy")?.commands.map((child) => child.name()),
@@ -118,6 +119,74 @@ test("top-level login runs the default login flow", async () => {
       username: "alias@example.test",
       browser: "edge",
     });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("offers skill installation before the first interactive login and then continues", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-cli-skill-first-login-"));
+  const storageRoot = join(root, ".teams-cli");
+  const skillFile = join(root, ".codex", "skills", "teams-cli", "SKILL.md");
+  await mkdir(join(root, ".codex"));
+  const questions: string[] = [];
+  try {
+    await createProgram({
+      storageRoot,
+      confirm: async (question) => {
+        questions.push(question);
+        return true;
+      },
+      loginImplementation: async () => {
+        assert.match(await readFile(skillFile, "utf8"), /name: teams-cli/);
+        return session;
+      },
+    }).parseAsync(["node", "teams-cli", "login"]);
+    assert.match(questions[0] ?? "", /Install the teams-cli skill before signing in/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("continues first login when skill installation is declined", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-cli-skill-declined-"));
+  const storageRoot = join(root, ".teams-cli");
+  await mkdir(join(root, ".claude"));
+  let loginCalls = 0;
+  try {
+    await createProgram({
+      storageRoot,
+      confirm: async () => false,
+      loginImplementation: async () => {
+        loginCalls += 1;
+        return session;
+      },
+    }).parseAsync(["node", "teams-cli", "login"]);
+    assert.equal(loginCalls, 1);
+    await assert.rejects(readFile(join(root, ".claude", "skills", "teams-cli", "SKILL.md")), { code: "ENOENT" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("does not offer skill installation during automated login", async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-cli-skill-automated-"));
+  const storageRoot = join(root, ".teams-cli");
+  await mkdir(join(root, ".claude"));
+  let confirmationCalls = 0;
+  try {
+    await createProgram({
+      storageRoot,
+      confirm: async () => {
+        confirmationCalls += 1;
+        return true;
+      },
+      loginImplementation: async () => session,
+    }).parseAsync([
+      "node", "teams-cli", "login", "--headless", "--username", "alice@example.test", "--password-command", join(root, "password-helper"),
+    ]);
+    assert.equal(confirmationCalls, 0);
+    await assert.rejects(readFile(join(root, ".claude", "skills", "teams-cli", "SKILL.md")), { code: "ENOENT" });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

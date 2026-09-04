@@ -116,11 +116,21 @@ npx --prefer-online @michaelschnyder/teams-cli@canary --help
 
 ## Troubleshooting
 
+Start with the read-only local diagnostic:
+
+```bash
+teams-cli doctor
+teams-cli doctor --json
+```
+
+It checks the Node.js version, selected Edge or Chrome installation, configured identity and saved-session health, CLI-managed skill integrity, and detected agent environments. It performs no authentication, network requests, writes, or permission changes. A failing prerequisite exits with status 1; warnings do not. Cowork's account-level skill installation and permissions are private to Claude and cannot be verified locally, so `doctor` reports only whether Claude Desktop was detected and directs you to check Cowork itself.
+
 - `teams-cli: command not found`: check `npm prefix --global` and your `PATH`.
 - Browser launch fails: install Edge or Chrome and select one with `--browser edge|chrome`.
 - Login succeeds but Teams access fails: confirm that the account has a Teams-enabled Microsoft 365 license.
 - Stored identity is rejected: run `teams-cli login` again.
 - An agent environment is not detected: pass its name explicitly to `teams-cli skills install`.
+- Cowork does not see the skill: upload and enable the generated ZIP under **Customize > Skills**; `teams-cli doctor` cannot verify that account-level setting.
 - Use `--debug` for sanitized request method, endpoint, status, duration, and retry diagnostics. Headers, tokens, cookies, query values, and bodies are not logged.
 
 ## Uninstall

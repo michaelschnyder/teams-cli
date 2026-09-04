@@ -12,6 +12,15 @@ teams-cli version --json
 
 When piped, `--version` prints only semantic version text. In a terminal, version output includes the installed channel, local build provenance, associated release notes, and any available update. The policy editor shows the same exact version in its footer.
 
+## Diagnose the local setup
+
+```bash
+teams-cli doctor
+teams-cli doctor --json
+```
+
+`doctor` checks local prerequisites, selected identity and session health, managed filesystem skills, and detected agent environments without authenticating, contacting Teams, writing files, or changing permissions. JSON output has a top-level `ok` value and a `checks` array. Claude Cowork installation is account-level and therefore cannot be verified by this command.
+
 ## Verify the active identity
 
 ```bash
@@ -115,6 +124,7 @@ teams-cli person image alice@example.com --base64
 ```bash
 teams-cli --help
 teams-cli message --help
+teams-cli doctor
 teams-cli --debug chat search "Project Phoenix" --json
 ```
 

@@ -16,7 +16,21 @@ npm install --global @michaelschnyder/teams-cli
 teams-cli --version
 ```
 
-### 2. Sign in
+### 2. Choose how you will use it
+
+For an agent-first setup, install the packaged skill before signing in:
+
+```bash
+teams-cli skills install
+```
+
+For filesystem-based agents such as Codex, Claude Code, Cursor, GitHub Copilot, OpenCode, Windsurf, Gemini CLI, Pi, and generic `.agents/skills` environments, the command installs the skill directly. You can then ask the agent, for example, `Send a test message to myself via Teams`; it can guide or perform login when needed.
+
+When Claude Desktop is detected, the command also creates a versioned Cowork ZIP in Downloads. Cowork requires you to upload that ZIP in **Customize > Skills > Create skill > Upload a skill** and enable it. This account-level step cannot be completed or verified by the CLI. See [Claude Cowork and other agent setup](docs/use/agent-skills.md).
+
+For direct console use, skip the skill and continue to login.
+
+### 3. Sign in
 
 ```bash
 teams-cli login
@@ -24,15 +38,7 @@ teams-cli login
 
 `teams-cli login` is the convenient alias for `teams-cli auth login`. It opens a dedicated Microsoft Edge profile by default, or a dedicated Google Chrome profile when selected. It does not reuse your normal browser profile or its signed-in session. The CLI discovers the Teams tenant and user, then saves them in the implicit `default` profile. Most users never need to provide a tenant ID or create a named profile.
 
-### 3. Install the agent skill
-
-```bash
-teams-cli skills install
-```
-
-The packaged `teams-cli` skill teaches compatible coding agents how to authenticate, discover Teams resources, read and send messages, and respect policies. Auto-detection supports Codex, Claude Code, Cursor, GitHub Copilot, OpenCode, Windsurf, Gemini CLI, Pi, and generic `.agents/skills` environments.
-
-Installing the CLI and its skill is usually everything needed to start using Teams with an agent. See [agent skill installation](docs/use/agent-skills.md) when auto-detection is unavailable or several agent environments are installed.
+On a first interactive login, the CLI offers to install the skill first when it detects an agent environment and no identity or managed skill. Declining continues login. Automated and non-interactive login never shows this prompt.
 
 ### 4. Add a workspace policy
 
@@ -70,9 +76,11 @@ For an existing group chat or channel, use `--chat CHAT_ID` or `--channel CHANNE
 
 ```mermaid
 flowchart LR
-    install[Install teams-cli] --> login[Sign in once]
-    login --> skill[Install the agent skill]
-    skill --> policy[Recommended: add a workspace policy]
+    install[Install teams-cli] --> route{How will you use it?}
+    route -->|Agent| skill[Install the agent skill]
+    route -->|Console| login[Sign in once]
+    skill --> login
+    login --> policy[Recommended: add a workspace policy]
     policy --> use[Ask an agent or run commands]
 ```
 
@@ -103,6 +111,7 @@ Person, chat, channel, and message commands support `--json`. JSON payloads stay
 | `login` | Sign in using the default session; alias for `auth login` | [Authentication](docs/use/authentication.md) |
 | `version` | Inspect build provenance, check for updates, or select the notification channel | [Installation and upgrades](docs/use/installation.md) |
 | `skills` | List, locate, install, and refresh the packaged agent skill | [Agent skill installation](docs/use/agent-skills.md) |
+| `doctor` | Diagnose the local runtime, browser, session, and managed skills without changing them | [Installation and upgrades](docs/use/installation.md#troubleshooting) |
 | `auth` | Login, refresh, inspect, export tokens, or logout | [Authentication](docs/use/authentication.md) |
 | `profile` | Manage optional named identity selectors | [Profiles](docs/use/profiles.md) |
 | `policy` | Create, inspect, check, activate, and edit safeguards | [Policies](docs/use/policies.md) |

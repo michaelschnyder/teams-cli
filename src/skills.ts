@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import {
   chmod,
   mkdir,
@@ -12,9 +13,11 @@ import {
 } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { strToU8, zipSync } from "fflate";
 import { parseStrictYaml, requireObject } from "./yaml.js";
+import { CLI_VERSION } from "./version.js";
 
 export type SkillPlatform = {
   name: string;
@@ -27,6 +30,20 @@ export type SkillPlatform = {
 export type BundledSkill = { name: string; description: string; content: string };
 export type SkillInstallation = { destination: string; skillNames: string[] };
 export type SkillManifest = { version: 1; installations: SkillInstallation[] };
+export type SkillInstallStatus = "installed" | "already-installed" | "conflict";
+export type SkillInstallResult = {
+  filesWritten: number;
+  destinations: string[];
+  files: Array<{ destination: string; skillName: string; file: string; status: SkillInstallStatus }>;
+};
+
+export type ClaudeDesktopDetectionOptions = {
+  platform?: NodeJS.Platform;
+  userHome?: string;
+  environment?: NodeJS.ProcessEnv;
+  exists?: (path: string) => boolean;
+  run?: (command: string, args: readonly string[]) => Promise<string>;
+};
 
 const LEGACY_SKILL_NAMES = [
   "teams-authentication",
@@ -89,6 +106,45 @@ function skillsResourceRoot(): string {
   return join(dirname(fileURLToPath(import.meta.url)), "skills");
 }
 
+function run(command: string, args: readonly string[]): Promise<string> {
+  return new Promise((resolveOutput, reject) => {
+    execFile(command, [...args], { encoding: "utf8", windowsHide: true }, (error, stdout) => {
+      if (error) reject(error);
+      else resolveOutput(stdout);
+    });
+  });
+}
+
+export async function detectClaudeDesktop(options: ClaudeDesktopDetectionOptions = {}): Promise<boolean> {
+  const selectedPlatform = options.platform ?? process.platform;
+  const userHome = options.userHome ?? homedir();
+  const environment = options.environment ?? process.env;
+  const exists = options.exists ?? existsSync;
+  if (selectedPlatform === "win32") {
+    try {
+      const output = await (options.run ?? run)("powershell.exe", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "(Get-AppxPackage -Name Claude -ErrorAction SilentlyContinue).Name",
+      ]);
+      return output.trim().length > 0;
+    } catch {
+      return false;
+    }
+  }
+  if (selectedPlatform === "darwin") {
+    return exists("/Applications/Claude.app") || exists(posix.join(userHome, "Applications", "Claude.app"));
+  }
+  if (selectedPlatform === "linux") {
+    const pathDirectories = (environment.PATH ?? "").split(":").filter(Boolean);
+    return pathDirectories.some((directory) => exists(posix.join(directory, "claude-desktop"))) ||
+      exists("/usr/share/applications/claude.desktop") ||
+      exists(posix.join(userHome, ".local", "share", "applications", "claude.desktop"));
+  }
+  return false;
+}
+
 function skillFrontmatter(content: string, file: string): Record<string, unknown> {
   const match = /^---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/.exec(content);
   if (!match?.[1]) throw new Error(`Skill ${file} has no YAML frontmatter`);
@@ -148,7 +204,7 @@ export async function installSkills(options: {
   names?: readonly string[];
   force?: boolean;
   manifestFile?: string;
-}): Promise<{ filesWritten: number; destinations: string[] }> {
+}): Promise<SkillInstallResult> {
   const bundled = await loadBundledSkills();
   const selected = options.names?.length
     ? bundled.filter(({ name }) => options.names?.includes(name))
@@ -160,22 +216,31 @@ export async function installSkills(options: {
   }
   const destinations = [...new Set(options.destinations.map((destination) => resolve(destination)))];
   let filesWritten = 0;
+  const files: SkillInstallResult["files"] = [];
   const managed = new Map<string, Set<string>>();
   for (const destination of destinations) {
     for (const skill of selected) {
       const directory = join(destination, skill.name);
       const file = join(directory, "SKILL.md");
       await mkdir(directory, { recursive: true });
-      let exists = false;
+      let existing: string | undefined;
       try {
         await stat(file);
-        exists = true;
+        existing = await readFile(file, "utf8");
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
-      if (exists && !options.force) continue;
-      await writeFile(file, skill.content, "utf8");
-      filesWritten += 1;
+      const same = existing !== undefined && existing.replaceAll("\r\n", "\n") === skill.content.replaceAll("\r\n", "\n");
+      let status: SkillInstallStatus;
+      if (existing !== undefined && !options.force) {
+        status = same ? "already-installed" : "conflict";
+      } else {
+        await writeFile(file, skill.content, "utf8");
+        filesWritten += 1;
+        status = "installed";
+      }
+      files.push({ destination, skillName: skill.name, file, status });
+      if (status === "conflict") continue;
       const names = managed.get(destination) ?? new Set<string>();
       names.add(skill.name);
       managed.set(destination, names);
@@ -197,7 +262,31 @@ export async function installSkills(options: {
       ),
     }, file);
   }
-  return { filesWritten, destinations };
+  return { filesWritten, destinations, files };
+}
+
+function skillFrontmatterText(content: string, file: string): string {
+  const match = /^(---\r?\n[\s\S]*?\r?\n---)(?:\r?\n|$)/.exec(content);
+  if (!match?.[1]) throw new Error(`Skill ${file} has no YAML frontmatter`);
+  return match[1];
+}
+
+export async function createCoworkSkillPackage(outputDirectory: string): Promise<string> {
+  const skill = (await loadBundledSkills()).find(({ name }) => name === CONSOLIDATED_SKILL);
+  if (!skill) throw new Error(`Bundled ${CONSOLIDATED_SKILL} skill was not found`);
+  const adapterFile = join(skillsResourceRoot(), CONSOLIDATED_SKILL, "claude-cowork.md");
+  const adapter = await readFile(adapterFile, "utf8");
+  const coworkSkill = `${skillFrontmatterText(skill.content, adapterFile)}\n\n${adapter.trim()}\n`;
+  const archive = zipSync({
+    "SKILL.md": strToU8(coworkSkill),
+    "instructions.md": strToU8(skill.content),
+  }, { level: 9 });
+  await mkdir(outputDirectory, { recursive: true });
+  const file = join(outputDirectory, `teams-cli-cowork-skill-${CLI_VERSION}.zip`);
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  await writeFile(temporary, archive);
+  await rename(temporary, file);
+  return file;
 }
 
 function consolidatedSkillNames(names: readonly string[]): { names: string[]; legacyNames: string[] } {
