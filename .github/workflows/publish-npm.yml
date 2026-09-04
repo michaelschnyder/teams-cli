@@ -23,7 +23,9 @@ jobs:
     if: >-
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'push'
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     outputs:
       pull_request: ${{ steps.pull-request.outputs.number }}
@@ -52,7 +54,9 @@ jobs:
       ((github.event_name == 'workflow_run' &&
         needs.resolve-canary.result == 'success' &&
         needs.resolve-canary.outputs.pull_request != '') ||
-       (github.event_name != 'workflow_run' && needs.verify.result == 'success'))
+       (github.event_name != 'workflow_run' &&
+        needs.verify.result == 'success' &&
+        (github.event_name != 'workflow_dispatch' || (github.ref == 'refs/heads/main' && github.ref_protected))))
     needs: [resolve-canary, verify]
     runs-on: ubuntu-latest
     environment: npm

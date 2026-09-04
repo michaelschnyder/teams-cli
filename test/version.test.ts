@@ -23,7 +23,7 @@ test("sanitizes provenance and release text rendered in a terminal", () => {
     source: { author: "Ada\u001b[31m" },
     releaseNotes: { title: "Useful\u0007 release", body: "Details" },
   }, "canary", null);
-  assert.match(rendered, /Ada\[31m/);
+  assert.match(rendered, /Source author: Ada/);
   assert.doesNotMatch(rendered, /\u001b|\u0007/);
 });
 
@@ -33,7 +33,7 @@ test("refuses upgrade and channel mutation from npx", async () => {
     environment: { npm_command: "exec", npm_lifecycle_event: "npx" },
   });
   await assert.rejects(program.parseAsync(["node", "test", "version", "--upgrade"]), /temporary npx execution/);
-  await assert.rejects(program.parseAsync(["node", "test", "version", "--channel", "canary"]), /Cannot switch a global installation from npx/);
+  await assert.rejects(program.parseAsync(["node", "test", "version", "--channel", "canary"]), /Cannot update persistent channel settings from npx/);
 });
 
 test("validates complete packaged build provenance", () => {
@@ -54,20 +54,18 @@ test("validates complete packaged build provenance", () => {
   assert.equal(parseBuildInfo(info, "1.2.4"), null);
 });
 
-test("does not persist a channel when installation fails", async () => {
+test("persists channel changes without mutating the installation", async () => {
   const root = await mkdtemp(join(tmpdir(), "teams-cli-version-"));
   try {
     const program = new Command().exitOverride();
     registerVersionCommand(program, {
       storageRoot: root,
       environment: {},
-      fetcher: async () => new Response(JSON.stringify({ version: "0.2.0-canary.1.1.gabcdef12" }), { status: 200 }),
-      upgrader: async () => { throw new Error("install failed"); },
       stdout: { write: () => true },
       stderr: { write: () => true },
     });
-    await assert.rejects(program.parseAsync(["node", "test", "version", "--channel", "canary"]), /install failed/);
-    assert.deepEqual(await loadSettings(storagePaths(root)), { version: 1 });
+    await program.parseAsync(["node", "test", "version", "--channel", "canary"]);
+    assert.deepEqual(await loadSettings(storagePaths(root)), { version: 1, updateChannel: "canary" });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

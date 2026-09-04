@@ -1,10 +1,5 @@
-import { execFile, spawn } from "node:child_process";
-import { existsSync } from "node:fs";
-import { dirname, join, win32 } from "node:path";
-import { promisify } from "node:util";
+import { win32 } from "node:path";
 import { PACKAGE_NAME } from "./version.js";
-
-const execFileAsync = promisify(execFile);
 
 export type UpgradeRunner = (command: string, args: readonly string[]) => Promise<number>;
 
@@ -25,39 +20,14 @@ export function npmInvocation(
   return { command: "npm", args: [] };
 }
 
-const defaultRunner: UpgradeRunner = (command, args) => new Promise((resolve, reject) => {
-  const child = spawn(command, [...args], { stdio: "inherit", shell: false, windowsHide: true });
-  child.once("error", reject);
-  child.once("exit", (code) => resolve(code ?? 1));
-});
-
 export async function upgradeCli(options: {
   runner?: UpgradeRunner;
   globalRoot?: () => Promise<string>;
   targetVersion?: string;
   onInstalled?: () => Promise<void>;
 } = {}): Promise<void> {
-  const runner = options.runner ?? defaultRunner;
-  const npm = npmInvocation();
-  const targetVersion = options.targetVersion ?? "latest";
-  const installStatus = await runner(npm.command, [...npm.args, "install", "--global", `${PACKAGE_NAME}@${targetVersion}`]);
-  if (installStatus !== 0) {
-    throw new Error(`npm upgrade failed with exit code ${installStatus}`);
-  }
-  const globalRoot = options.globalRoot ?? (async () => {
-    const { stdout } = await execFileAsync(npm.command, [...npm.args, "root", "--global"], {
-      encoding: "utf8",
-      windowsHide: true,
-    });
-    return stdout.trim();
-  });
-  const installedCli = join(await globalRoot(), ...PACKAGE_NAME.split("/"), "dist", "cli.js");
-  if (!existsSync(installedCli) && !options.globalRoot) {
-    throw new Error(`The updated CLI was not found at ${installedCli}`);
-  }
-  await options.onInstalled?.();
-  const reinstallStatus = await runner(process.execPath, [installedCli, "skills", "reinstall"]);
-  if (reinstallStatus !== 0) {
-    throw new Error(`The CLI was upgraded, but skill reinstallation failed with exit code ${reinstallStatus}`);
-  }
+  void options;
+  throw new Error(
+    `Automatic self-upgrade is disabled. Upgrade ${PACKAGE_NAME} with your package manager in the same installation scope.`,
+  );
 }

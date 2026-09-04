@@ -1,23 +1,21 @@
 import type { Command } from "commander";
 import { Option } from "commander";
+import { stripVTControlCharacters } from "node:util";
 import { storagePaths } from "../storage.js";
 import { resolveUpdateChannel, saveUpdateChannel, type UpdateChannel } from "../settings.js";
 import { checkForUpdate, isNpxExecution, latestForChannel, updateChecksDisabled, type UpdateCandidate } from "../update.js";
-import { upgradeCli } from "../upgrade.js";
 import { BUILD_INFO, CLI_VERSION, PACKAGE_NAME, type BuildInfo } from "../version.js";
 
 export type VersionCommandOptions = {
   storageRoot?: string;
-  confirm?: (question: string) => Promise<boolean>;
   fetcher?: typeof fetch;
   environment?: NodeJS.ProcessEnv;
   stdout?: Pick<NodeJS.WriteStream, "write"> & { isTTY?: boolean };
   stderr?: Pick<NodeJS.WriteStream, "write"> & { isTTY?: boolean };
-  upgrader?: typeof upgradeCli;
 };
 
 function safe(value: string): string {
-  return value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
+  return stripVTControlCharacters(value).replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "");
 }
 
 export function renderVersion(
@@ -60,7 +58,6 @@ export function renderVersion(
 
 async function versionDetails(options: VersionCommandOptions & {
   json?: boolean;
-  allowPrompt?: boolean;
 }): Promise<void> {
   const environment = options.environment ?? process.env;
   const stdout = options.stdout ?? process.stdout;
@@ -89,28 +86,18 @@ async function versionDetails(options: VersionCommandOptions & {
   if (updateStatus === "pinned") stderr.write("Snapshot builds are pinned. Switch to stable or canary explicitly to leave this snapshot.\n");
   if (updateStatus === "npx") stderr.write("This temporary npx execution manages its version through the package spec, not the CLI updater.\n");
   if (updateStatus === "unavailable") stderr.write("The npm registry could not be checked; installed build information is still complete.\n");
-  if (candidate && options.allowPrompt && options.confirm && await options.confirm(`Install teams-cli ${candidate.version}?`)) {
-    stderr.write(`Upgrading teams-cli to ${candidate.version} through npm…\n`);
-    await (options.upgrader ?? upgradeCli)({ targetVersion: candidate.version });
-    stdout.write("teams-cli and recorded skill installations are up to date.\n");
-  }
 }
 
 async function changeChannel(channel: UpdateChannel, options: VersionCommandOptions): Promise<void> {
   const environment = options.environment ?? process.env;
   if (isNpxExecution(environment)) {
     throw new Error(
-      `Cannot switch a global installation from npx. Run \`npx --prefer-online ${PACKAGE_NAME}@${channel === "stable" ? "latest" : "canary"} --version\` instead.`,
+      `Cannot update persistent channel settings from npx. Run \`npx --prefer-online ${PACKAGE_NAME}@${channel === "stable" ? "latest" : "canary"} --version\` instead.`,
     );
   }
   const paths = storagePaths(options.storageRoot);
-  const candidate = await latestForChannel(channel, options.fetcher);
-  (options.stderr ?? process.stderr).write(`Switching teams-cli to ${channel} (${candidate.version})…\n`);
-  await (options.upgrader ?? upgradeCli)({
-    targetVersion: candidate.version,
-    onInstalled: () => saveUpdateChannel(paths, channel),
-  });
-  (options.stdout ?? process.stdout).write(`teams-cli now follows the ${channel} channel at ${candidate.version}.\n`);
+  await saveUpdateChannel(paths, channel);
+  (options.stdout ?? process.stdout).write(`teams-cli now follows the ${channel} channel for update checks.\n`);
 }
 
 async function upgradeCurrent(options: VersionCommandOptions): Promise<void> {
@@ -124,23 +111,23 @@ async function upgradeCurrent(options: VersionCommandOptions): Promise<void> {
   const paths = storagePaths(options.storageRoot);
   const channel = await resolveUpdateChannel({ paths, environment, installedChannel: BUILD_INFO.channel });
   const candidate = await latestForChannel(channel, options.fetcher);
-  (options.stderr ?? process.stderr).write(`Upgrading teams-cli on ${channel} to ${candidate.version}…\n`);
-  await (options.upgrader ?? upgradeCli)({ targetVersion: candidate.version });
-  (options.stdout ?? process.stdout).write("teams-cli and recorded skill installations are up to date.\n");
+  (options.stderr ?? process.stderr).write(
+    `Automatic self-upgrade is disabled. Upgrade ${PACKAGE_NAME} to ${candidate.version} using your package manager in the same installation scope (global or project).\n`,
+  );
 }
 
 export function registerVersionCommand(program: Command, options: VersionCommandOptions = {}): void {
   program.command("version")
-    .description("Show build provenance, manage the update channel, or upgrade the global installation")
-    .option("--upgrade", "Install the newest version from the effective channel")
-    .addOption(new Option("--channel <channel>", "Switch the global installation channel").choices(["stable", "canary"]))
+    .description("Show build provenance, manage the update channel, or show upgrade guidance")
+    .option("--upgrade", "Show the newest version from the effective channel and manual upgrade guidance")
+    .addOption(new Option("--channel <channel>", "Switch the saved update channel").choices(["stable", "canary"]))
     .option("--json", "Output structured build and update information")
     .action(async (commandOptions: { upgrade?: boolean; channel?: UpdateChannel; json?: boolean }) => {
-      if (commandOptions.channel && commandOptions.upgrade) throw new Error("--channel already installs the newest version and cannot be combined with --upgrade");
+      if (commandOptions.channel && commandOptions.upgrade) throw new Error("--channel cannot be combined with --upgrade");
       if (commandOptions.json && (commandOptions.channel || commandOptions.upgrade)) throw new Error("--json cannot be combined with --channel or --upgrade");
       if (commandOptions.channel) return changeChannel(commandOptions.channel, options);
       if (commandOptions.upgrade) return upgradeCurrent(options);
-      return versionDetails({ ...options, json: commandOptions.json === true, allowPrompt: true });
+      return versionDetails({ ...options, json: commandOptions.json === true });
     });
 }
 
@@ -150,5 +137,5 @@ export async function showAdaptiveVersion(options: VersionCommandOptions = {}): 
     stdout.write(`${CLI_VERSION}\n`);
     return;
   }
-  await versionDetails({ ...options, allowPrompt: true });
+  await versionDetails(options);
 }
