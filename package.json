@@ -48,10 +48,14 @@
     "provenance": true
   },
   "dependencies": {
+    "chalk": "^6.0.0",
     "commander": "^15.0.0",
+    "consola": "^3.4.2",
     "fflate": "^0.8.3",
+    "ora": "^9.4.1",
     "playwright-core": "^1.54.2",
     "semver": "^7.8.5",
+    "string-width": "^8.2.2",
     "ws": "^8.21.3",
     "yaml": "^2.9.0"
   },

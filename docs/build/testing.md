@@ -14,6 +14,10 @@ npm run package:smoke
 
 The default suite uses synthetic tokens, mocked APIs, temporary storage roots, and loopback HTTP servers. Its critical security assertions prove that inactive policies audit without blocking and that active denials make the real CLI produce zero message GETs or POSTs. It also checks policy intersection, subject globs, permission diagnostics, no-active-policy behavior, raw-token gating, profile precedence, tenant/user storage isolation, one-time editor claims, Origin/CSRF enforcement, locked policies, and atomic editor saves.
 
+## Output and diagnostics
+
+`test/output.test.ts` tests stream-based format selection, JSON/YAML equivalence, safe auth projection, Unicode and narrow-terminal layouts, prompt suppression, and runner validation without replacing global process streams. `test/diagnostics.test.ts` verifies both sinks, encoded identifier and credential redaction, concurrent invocation and attempt isolation, restrictive permissions, and the file size cap. Existing command tests explicitly select human output when exercising interactive prompts.
+
 ## End-to-end tests
 
 Live tests are separate from the default suite and must use an independent test tenant. CI can give each test user a separate profile and provide a password through a credential-helper executable:

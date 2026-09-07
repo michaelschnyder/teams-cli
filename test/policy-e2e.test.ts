@@ -278,6 +278,7 @@ test("sends to a current-tenant email through the person policy and confirms gue
       createProgram({
         storageRoot: root,
         subjectPath,
+        stdout: { isTTY: true, write: () => true },
         confirm: async (question) => {
           questions.push(question);
           return false;

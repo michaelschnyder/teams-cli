@@ -1,3 +1,4 @@
+import { instruction } from "./terminal.js";
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import { existsSync } from "node:fs";
 import { access, chmod, mkdir, readFile, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
@@ -56,7 +57,7 @@ export type PolicyEditorOptions = {
   connectTimeoutMs?: number;
   disconnectGraceMs?: number;
   openUrl?: (url: string) => Promise<void>;
-  onReady?: (value: { url: string; port: number; bindAddress: string }) => void;
+  onReady?: (value: { url: string; port: number; bindAddress: string; }) => void;
 };
 
 export type PolicyEditorResult = {
@@ -217,7 +218,7 @@ async function discoverResources(
   paths: StoragePaths,
   context: RuntimeContext,
   subjectPath: string,
-): Promise<{ resources: Resource[]; error?: string }> {
+): Promise<{ resources: Resource[]; error?: string; }> {
   if (!context.tenantId || !context.userId) return { resources: [], error: "Select a tenant and user before loading Teams resources" };
   try {
     const resolved = await resolvePolicies(paths, subjectPath);
@@ -636,9 +637,9 @@ export async function startPolicyEditor(options: PolicyEditorOptions): Promise<P
   port = await bindServer(server, bindAddress, options.port);
   restart = `cd ${shellQuote(subjectPath)} && teams-cli --profile ${shellQuote(options.context.profileName)}${options.context.tenantId ? ` --tenant ${shellQuote(options.context.tenantId)}` : ""}${options.context.userId ? ` --user ${shellQuote(options.context.userId)}` : ""} policy edit --port ${port}`;
   const url = `http://localhost:${port}/claim/${encodeURIComponent(bootstrapToken)}`;
-  process.stderr.write(`Policy editor: ${url}\n`);
-  process.stderr.write(`Workspace: ${subjectPath}\n`);
-  if (container) process.stderr.write(`Warning: container mode binds ${bindAddress}:${port}; publish only to a trusted localhost interface.\n`);
+  instruction(`Policy editor: ${url}\n`);
+  instruction(`Workspace: ${subjectPath}\n`);
+  if (container) instruction(`Warning: container mode binds ${bindAddress}:${port}; publish only to a trusted localhost interface.\n`);
   options.onReady?.({ url, port, bindAddress });
   if (options.open) {
     try {
@@ -663,6 +664,6 @@ export async function startPolicyEditor(options: PolicyEditorOptions): Promise<P
   for (const socket of sockets) socket.close(1001, "Policy editor closed");
   await new Promise<void>((resolve) => server.close(() => resolve()));
   webSockets.close();
-  if (interrupted) process.stderr.write("Policy editor interrupted.\n");
+  if (interrupted) instruction("Policy editor interrupted.\n");
   return { reason, url, port, bindAddress };
 }

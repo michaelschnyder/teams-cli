@@ -51,7 +51,7 @@ teams-cli message get <message-id> --chat <chat-id> --json
 
 Pagination cursors are opaque. Pass a returned cursor back unchanged and do not combine `--cursor` with `--page-size`; page size is 1 to 200.
 
-Machine-readable data stays on stdout while progress, policy notices, diagnostics, and update notices use stderr. Do not merge the streams when parsing JSON. `person image` writes binary data only to redirected stdout and refuses an interactive terminal; use `--base64` when the result must remain text.
+Ordinary commands default to JSON when stdout is redirected and human text in a terminal. Use `--output text|json|yaml` explicitly when required; `--json` remains supported. JSON and YAML modes never prompt: run `login` explicitly, use `--all` for chat enumeration, and use a verified object ID for an external recipient. Machine-readable data stays on stdout while progress, policy notices, diagnostics, and update notices use stderr. Do not merge the streams when parsing JSON. `person image` writes binary data only to redirected stdout and refuses an interactive terminal; use `--base64` when the result must remain text.
 
 ## Configure and check policies
 
@@ -115,3 +115,9 @@ teams-cli auth refresh access
 ```
 
 Use `--debug` for sanitized request diagnostics. It reports methods, redacted endpoints, status, duration, and retries without headers, bodies, tokens, or conversation and message IDs.
+
+## Troubleshoot output and diagnostics
+
+`--log error|warn|info|debug|trace` controls terminal verbosity; `-v`, `-vv`, and `-vvv` select info, debug, and trace. Precedence is explicit `--log`, then `--debug`, then verbosity. `--log-file <path>` opts into sanitized JSON Lines diagnostics, capped at 10 MiB; the parent directory must exist. Files contain command and request metadata, never message content, arguments, identities, tokens, or editor access URLs. Do not expect to recover target IDs from logs.
+
+Auth login, whoami, and refresh output contains only identity and token metadata. Raw `auth tokens`, image byte/base64 export, and redirected `--version` retain their special output contracts. Explicit structured image output contains `contentType` and base64 `data`. Profiles and policy inspection follow the shared output formats; a named policy result wraps the actual policy under `policy`, so do not write the whole inspection result as a policy file.

@@ -21,7 +21,7 @@ teams-cli doctor
 teams-cli doctor --json
 ```
 
-`doctor` checks local prerequisites, selected identity and session health, managed filesystem skills, and detected agent environments without authenticating, contacting Teams, writing files, or changing permissions. JSON output has a top-level `ok` value and a `checks` array. Claude Cowork installation is account-level and therefore cannot be verified by this command.
+`doctor` checks local prerequisites, selected identity and session health, managed filesystem skills, and detected agent environments without authenticating, contacting Teams, writing files, or changing permissions. An explicitly requested diagnostic log is the only optional file output. JSON output has a top-level `ok` value and a `checks` array. Claude Cowork installation is account-level and therefore cannot be verified by this command.
 
 ## Verify the active identity
 
@@ -112,14 +112,34 @@ printf '%s' "Hello from the project team" | teams-cli message send --channel CHA
 
 ## Structured and binary output
 
-Person, chat, channel, and message data commands support `--json`. JSON payloads stay on stdout. Progress, policy notices, diagnostics, and update notices stay on stderr, so scripts should not merge the streams when parsing output.
+All ordinary result-producing commands support `-o, --output text|json|yaml`. The default is human text when stdout is a terminal and JSON when it is redirected. `--json` is equivalent to `--output json`; combining it with `--output text` or `--output yaml` fails before the operation runs. JSON and YAML contain the same full data, including pagination and target information. Human tables switch to stacked records when the terminal is too narrow to preserve identifiers.
 
-`person image` writes binary data only to redirected stdout and refuses an interactive terminal. Use `--base64` when the result must remain text:
+Results stay on stdout. Progress, warnings, diagnostics, and update notices stay on stderr; do not merge the streams when parsing output. JSON and YAML modes suppress routine progress and all interactive prompts. Run `login` explicitly when authentication is needed, acknowledge full chat enumeration with `--all`, and use a previously verified Microsoft object ID for an external recipient in automation.
+
+```bash
+teams-cli person search Alice                       # readable output in a terminal
+teams-cli person search Alice > people.json          # automatic JSON
+teams-cli person search Alice --output text > people.txt
+teams-cli profile show --output yaml
+teams-cli policy list --json
+teams-cli auth whoami --json
+```
+
+Auth login, whoami, and refresh results expose token audiences and expiry metadata, never token values. Profiles, policies, skills, and mutation acknowledgements now support structured output too. Existing data-resource JSON retains its resource fields; local lists use `title` and `items`, and acknowledgements include an `action` and operation details.
+
+Explicit exports have these exceptions:
+
+- `person image` defaults to raw bytes on redirected stdout and refuses raw bytes in a terminal. `--base64` emits one base64 line. Explicit `--output json|yaml` (or `--json`) emits `{ contentType, data }`, where `data` is base64; it cannot be combined with `--base64`.
+- `auth tokens` keeps its default raw-token output behind the existing policy check. Explicit JSON/YAML produces an object keyed by token target. `--decode` returns decoded claims through the common output formats.
+- Redirected `--version` without an explicit output format retains its single semantic-version line. Use `version --json` for structured build information.
 
 ```bash
 teams-cli person image alice@example.com > alice.jpg
 teams-cli person image alice@example.com --base64
+teams-cli person image alice@example.com --output json
 ```
+
+Migration: add `--output text` to any script that previously parsed human text. `profile show` and `policy show` now follow the common output default, so request `--output yaml` explicitly and extract the `policy` field when exporting a named policy for editing. Do not save the entire result object as a policy file. Automatic JSON selection depends on stdout, not stdin; piping a message body into a command with terminal stdout still uses human presentation.
 
 ## Help and diagnostics
 
@@ -131,3 +151,17 @@ teams-cli --debug chat search "Project Phoenix" --json
 ```
 
 Debug output is sanitized and written to stderr. It does not include headers, tokens, cookies, query values, request bodies, or conversation and message identifiers.
+
+### Log controls
+
+`--log error|warn|info|debug|trace` sets terminal verbosity. `-v` selects info, `-vv` debug, and `-vvv` or more trace. Explicit `--log` takes precedence over `--debug`, which takes precedence over `-v`. The default is info for interactive human output and warn for structured or redirected output. `NO_COLOR` disables color; CI and `TERM=dumb` disable animated progress. Prompts and warnings suspend progress so they cannot overwrite each other.
+
+```bash
+teams-cli --log debug channel list --json
+teams-cli --log-file ./teams-debug.jsonl chat search "Project Phoenix" --json
+teams-cli --log error --log-file ./teams-debug.jsonl auth whoami --json
+```
+
+`--log-file <path>` appends timestamped JSON Lines diagnostics independently of terminal verbosity. The parent directory must exist. The file records command names without arguments, outcome, elapsed time, sanitized HTTP method/endpoint/status/attempt, and token-refresh targets. It never records tokens, headers, cookies, query values, personal identifiers, message content, raw response bodies, editor access URLs, or arbitrary error messages. No log is created unless requested.
+
+Files are restricted to the owner on POSIX systems; Windows uses the containing directory's ACL. Logging stops at 10 MiB and warns once; archive or remove the file before collecting more diagnostics. A log destination that cannot be opened fails before command execution. A later file error disables file logging and warns once without retrying or changing the operation's result. This is a troubleshooting log, not a record of sent or read messages.

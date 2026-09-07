@@ -2,7 +2,7 @@ import { TEAMS_AUTHZ_URL } from "./constants.js";
 import { observedFetch } from "./diagnostics.js";
 
 type AuthzPayload = {
-  tokens?: { skypeToken?: string; expiresIn?: number };
+  tokens?: { skypeToken?: string; expiresIn?: number; };
   region?: string;
   partition?: string;
   regionGtms?: {
@@ -45,20 +45,12 @@ export async function exchangeInitialToken(initialToken: string): Promise<TeamsS
 
   const raw = await response.text();
   if (!response.ok) {
-    let message = raw.slice(0, 300);
-    try {
-      const parsed = JSON.parse(raw) as { errorCode?: string; message?: string };
-      message = parsed.errorCode ?? parsed.message ?? message;
-    } catch {
-      // Preserve the bounded text response for diagnostics.
-    }
-    throw new TeamsAuthError(
-      response.status,
-      `Teams auth exchange failed (${response.status}): ${message}`,
-    );
+    throw new TeamsAuthError(response.status, `Teams auth exchange failed (${response.status})`);
   }
 
-  const payload = JSON.parse(raw) as AuthzPayload;
+  let payload: AuthzPayload;
+  try { payload = JSON.parse(raw) as AuthzPayload; }
+  catch { throw new Error("Teams auth exchange returned invalid JSON"); }
   const skypeToken = payload.tokens?.skypeToken;
   if (!skypeToken) throw new Error("Teams auth exchange returned no Skype token");
 

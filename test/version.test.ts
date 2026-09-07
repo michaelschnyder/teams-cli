@@ -1,10 +1,14 @@
 import assert from "node:assert/strict";
-import { Command } from "commander";
-import { mkdtemp, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { ResultCommand as Command } from "../src/command-runner.js";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { registerVersionCommand, renderVersion, showAdaptiveVersion } from "../src/commands/version.js";
+import { promisify } from "node:util";
+import { parse } from "yaml";
+import { registerVersionCommand, showAdaptiveVersion } from "../src/commands/version.js";
+import { renderVersion } from "../src/presenters/version.js";
 import { loadSettings, saveUpdateChannel } from "../src/settings.js";
 import { storagePaths } from "../src/storage.js";
 import type { UpgradeOptions } from "../src/upgrade.js";
@@ -18,10 +22,55 @@ function manifest(version: string): Response {
   return new Response(JSON.stringify({ version }), { status: 200, headers: { "content-type": "application/json" } });
 }
 
+test("upgrade and channel-switch subprocesses leave stdout as one structured result", { timeout: 30_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "teams-cli-upgrade-output-"));
+  try {
+    const packageRoot = join(root, "@michaelschnyder", "teams-cli");
+    await mkdir(join(packageRoot, "dist"), { recursive: true });
+    const npmScript = join(root, "npm.cjs");
+    await writeFile(npmScript, 'console.log("npm install progress"); console.error("npm warning");');
+    await writeFile(join(packageRoot, "dist", "cli.js"), 'console.log(JSON.stringify({ action: "Reinstalled skills" })); console.error("skill warning");');
+    for (const operation of [["--upgrade"], ["--channel", "canary"]]) {
+      for (const format of [undefined, "json", "yaml"] as const) {
+        const args = ["node", "test", "version", ...operation, ...(format ? ["--output", format] : [])];
+        const source = `
+          import { ResultCommand } from ${JSON.stringify(new URL("../src/command-runner.ts", import.meta.url).href)};
+          import { registerVersionCommand } from ${JSON.stringify(new URL("../src/commands/version.ts", import.meta.url).href)};
+          import { upgradeCli } from ${JSON.stringify(new URL("../src/upgrade.ts", import.meta.url).href)};
+          const program = new ResultCommand();
+          registerVersionCommand(program, {
+            storageRoot: ${JSON.stringify(join(root, "storage"))},
+            environment: {},
+            fetcher: async () => new Response(JSON.stringify({ version: "0.3.0" })),
+            upgrader: options => upgradeCli({
+              ...options,
+              packageRoot: ${JSON.stringify(packageRoot)},
+              npm: { command: process.execPath, args: [${JSON.stringify(npmScript)}] },
+              globalRoot: async () => ${JSON.stringify(root)},
+            }),
+          });
+          await program.parseAsync(${JSON.stringify(args)});
+        `;
+        const { stdout, stderr } = await promisify(execFile)(process.execPath, ["--import", "tsx", "--input-type=module", "-e", source], { timeout: 10_000 });
+        const result = format === "yaml" ? parse(stdout) : JSON.parse(stdout);
+        assert.deepEqual(result, operation[0] === "--upgrade"
+          ? { action: "Upgraded teams-cli and recorded skill installations", version: "0.3.0" }
+          : { action: "Changed update channel", channel: "canary", version: "0.3.0" });
+        for (const text of ["npm install progress", "npm warning", "Reinstalled skills", "skill warning"]) {
+          assert.ok(stderr.includes(text), `Missing subprocess output: ${text}`);
+          assert.ok(!stdout.includes(text), `Subprocess output leaked into stdout: ${text}`);
+        }
+      }
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("keeps adaptive version output terse outside a TTY", async () => {
   let output = "";
-  await showAdaptiveVersion({ stdout: { isTTY: false, write: (value) => { output += String(value); return true; } } });
-  assert.equal(output, "0.2.0\n");
+  const result = await showAdaptiveVersion({ stdout: { isTTY: false, write: (value) => { output += String(value); return true; } } });
+  assert.equal(result.raw?.toString(), "0.2.0\n");
 });
 
 test("sanitizes provenance and release text rendered in a terminal", () => {
@@ -85,7 +134,7 @@ test("switches the installed channel and persists it only after installation suc
     await program.parseAsync(["node", "test", "version", "--channel", "canary"]);
     assert.deepEqual(await loadSettings(storagePaths(root)), { version: 1, updateChannel: "canary" });
     assert.equal(target, "0.3.0-canary.4.1.gabcdef12");
-    assert.match(output, /follows the canary channel/);
+    assert.equal(JSON.parse(output).channel, "canary");
   } finally {
     await rm(root, { recursive: true, force: true });
   }

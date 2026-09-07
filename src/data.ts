@@ -2,7 +2,8 @@ import {
   refreshTokens,
   type DataTokenTarget,
 } from "./auth.js";
-import { debugDecision, setRequestAttempt, showStatus } from "./diagnostics.js";
+import { diagnostic, withRequestAttempt } from "./diagnostics.js";
+import { withStatus } from "./terminal.js";
 import { secondsUntil } from "./jwt.js";
 import {
   loadSession,
@@ -42,13 +43,11 @@ async function refreshTarget(
     target === "skype" &&
     secondsUntil(session.accessToken.expiresAt) <= REFRESH_SKEW_SECONDS
   ) {
-    showStatus("Refreshing access token…");
-    debugDecision("refresh token=access reason=Skype-prerequisite");
-    session = (await refreshTokens(paths, identity, "access", browser)).after;
+    diagnostic({ event: "refresh", target: "access" });
+    session = (await withStatus("Refreshing access token…", () => refreshTokens(paths, identity, "access", browser))).after;
   }
-  showStatus(`Refreshing ${label(target)} token…`);
-  debugDecision(`refresh token=${target}`);
-  return (await refreshTokens(paths, identity, target, browser)).after;
+  diagnostic({ event: "refresh", target });
+  return (await withStatus(`Refreshing ${label(target)} token…`, () => refreshTokens(paths, identity, target, browser))).after;
 }
 
 async function prepareSession(
@@ -76,16 +75,14 @@ export async function withDataSession<T>(
 ): Promise<T> {
   const required = typeof targets === "string" ? [targets] : [...targets];
   const session = await prepareSession(paths, identity, browser, required, false);
-  setRequestAttempt(1);
   try {
-    return await operation(session);
+    return await withRequestAttempt(1, () => operation(session));
   } catch (error) {
     if (!(error instanceof TeamsApiError) || (error.status !== 401 && error.status !== 403)) {
       throw error;
     }
-    debugDecision(`retry authenticationStatus=${error.status} attempt=2`);
+    diagnostic({ event: "retry", status: error.status, attempt: 2 });
     const refreshed = await prepareSession(paths, identity, browser, required, true);
-    setRequestAttempt(2);
-    return operation(refreshed);
+    return withRequestAttempt(2, () => operation(refreshed));
   }
 }

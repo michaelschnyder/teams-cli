@@ -102,7 +102,9 @@ These safeguards apply to operations made through this CLI. A sufficiently privi
 
 ### Structured output
 
-Person, chat, channel, and message commands support `--json`. JSON payloads stay on stdout, while progress, warnings, update notices, and sanitized diagnostics stay on stderr. Scripts and agents can therefore consume stdout without mixing it with status text.
+Commands display readable tables or details in a terminal and produce JSON when stdout is redirected. Use `--output text|json|yaml` to select a format explicitly; `--json` remains available. Structured output never prompts. Progress, warnings, update notices, and sanitized diagnostics stay on stderr.
+
+Raw token export, profile image byte/base64 export, and terse redirected `--version` are exceptions. Scripts that previously parsed human text should add `--output text`. For troubleshooting, use `--debug` or `--log-file ./teams-debug.jsonl` to capture sanitized request metadata without message contents or credentials. See [output and logging](docs/use/commands.md#structured-and-binary-output).
 
 ## Command reference
 

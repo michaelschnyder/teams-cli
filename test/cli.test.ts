@@ -3,16 +3,10 @@ import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import {
-  createProgram,
-  personImageOutput,
-  renderPeople,
-  renderPerson,
-  renderRefreshResult,
-  renderTokens,
-  selectedSendTarget,
-  selectedTarget,
-} from "../src/cli.js";
+import { createProgram } from "../src/cli.js";
+import { personImageOutput, renderTokens } from "../src/export-output.js";
+import { renderPeople, renderPerson, renderRefreshResult } from "../src/presenters.js";
+import { selectedSendTarget, selectedTarget } from "../src/inputs.js";
 import { initializePolicy, resolvePolicyByName } from "../src/policy.js";
 import { storagePaths, type StoredSession } from "../src/storage.js";
 import { saveSession } from "../src/storage.js";
@@ -43,13 +37,13 @@ test("exposes login plus the grouped CLI commands", () => {
   assert.match(program.options.find((option) => option.long === "--user")?.description ?? "", /Optional/);
   assert.deepEqual(program.commands.map((command) => command.name()), ["version", "skills", "doctor", "login", "auth", "profile", "policy", "person", "chat", "channel", "message"]);
   const command = (name: string) => program.commands.find((candidate) => candidate.name() === name);
-  assert.deepEqual(command("version")?.options.map((option) => option.long), ["--upgrade", "--channel", "--json"]);
+  assert.deepEqual(command("version")?.options.map((option) => option.long), ["--upgrade", "--channel", "--json", "--output"]);
   assert.deepEqual(
     command("auth")?.commands.map((child) => child.name()),
     ["login", "refresh", "whoami", "tokens", "logout"],
   );
   assert.deepEqual(command("skills")?.commands.map((child) => child.name()), ["list", "path", "install", "reinstall"]);
-  assert.deepEqual(command("doctor")?.options.map((option) => option.long), ["--json"]);
+  assert.deepEqual(command("doctor")?.options.map((option) => option.long), ["--json", "--output"]);
   assert.deepEqual(command("profile")?.commands.map((child) => child.name()), ["list", "show", "save", "remove"]);
   assert.deepEqual(
     command("policy")?.commands.map((child) => child.name()),
@@ -83,7 +77,7 @@ test("keeps piped --version terse and provides structured version metadata", asy
       environment: {},
       fetcher: async () => new Response(JSON.stringify({ version: "0.2.0" }), { status: 200 }),
     }).parseAsync(["node", "teams-cli", "version", "--json"]);
-    const output = JSON.parse(stdout) as { installed: { version: string; channel: string }; update: { status: string } };
+    const output = JSON.parse(stdout) as { installed: { version: string; channel: string; }; update: { status: string; }; };
     assert.equal(output.installed.version, "0.2.0");
     assert.equal(output.installed.channel, "local");
     assert.equal(output.update.status, "current");
@@ -111,7 +105,7 @@ test("top-level login runs the default login flow", async () => {
         await saveSession(paths, loggedIn);
         return loggedIn;
       },
-    }).parseAsync(["node", "teams-cli", "login"]);
+    }).parseAsync(["node", "teams-cli", "login", "--output", "text"]);
     assert.equal(calls, 1);
     assert.deepEqual((await loadProfiles(storagePaths(root))).profiles.default, {
       tenantId: "alias-tenant",
@@ -141,7 +135,7 @@ test("offers skill installation before the first interactive login and then cont
         assert.match(await readFile(skillFile, "utf8"), /name: teams-cli/);
         return session;
       },
-    }).parseAsync(["node", "teams-cli", "login"]);
+    }).parseAsync(["node", "teams-cli", "login", "--output", "text"]);
     assert.match(questions[0] ?? "", /Install the teams-cli skill before signing in/);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -161,7 +155,7 @@ test("continues first login when skill installation is declined", async () => {
         loginCalls += 1;
         return session;
       },
-    }).parseAsync(["node", "teams-cli", "login"]);
+    }).parseAsync(["node", "teams-cli", "login", "--output", "text"]);
     assert.equal(loginCalls, 1);
     await assert.rejects(readFile(join(root, ".claude", "skills", "teams-cli", "SKILL.md")), { code: "ENOENT" });
   } finally {
@@ -200,7 +194,7 @@ test("chat collection commands require confirmation before an unpaged full enume
         questions.push(question);
         return false;
       },
-    }).parseAsync(["node", "teams-cli", "chat", "list", "--json"]),
+    }).parseAsync(["node", "teams-cli", "chat", "list", "--output", "text"]),
     /Use `teams-cli chat search <query>` first, or pass `--all`/,
   );
   assert.match(questions[0] ?? "", /complete chat history/);
@@ -210,7 +204,7 @@ test("chat collection commands require confirmation before an unpaged full enume
         questions.push(question);
         return false;
       },
-    }).parseAsync(["node", "teams-cli", "chat", "get", "chat-id", "--json"]),
+    }).parseAsync(["node", "teams-cli", "chat", "get", "chat-id", "--output", "text"]),
     /Use `teams-cli chat search <query>` first, or pass `--all`/,
   );
   assert.match(questions[1] ?? "", /complete chat history/);
@@ -249,7 +243,8 @@ test("activates a named policy and prints filesystem protection guidance", async
     }
 
     assert.equal((await resolvePolicyByName(paths, "agent")).policy.active, true);
-    assert.match(stdout, /Activated policy agent/);
+    assert.equal(JSON.parse(stdout).action, "Activated policy");
+    assert.equal(JSON.parse(stdout).name, "agent");
     assert.match(stderr, process.platform === "win32" ? /read-only ACL/ : /chmod 400/);
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -339,7 +334,7 @@ test("offers first-time users an interactive login and saves the discovered defa
       storageRoot: root,
       confirm: async (question) => {
         questions.push(question);
-        return true;
+        return questions.length === 1;
       },
       loginImplementation: async (paths, options) => {
         assert.equal(options.tenant, undefined);
@@ -348,7 +343,7 @@ test("offers first-time users an interactive login and saves the discovered defa
         await saveSession(paths, discovered);
         return discovered;
       },
-    }).parseAsync(["node", "teams-cli", "auth", "tokens", "access", "--decode"]);
+    }).parseAsync(["node", "teams-cli", "auth", "tokens", "access", "--decode", "--output", "text"]);
 
     assert.match(questions[0] ?? "", /No Teams session is configured/);
     assert.deepEqual((await loadProfiles(storagePaths(root))).profiles.default, {

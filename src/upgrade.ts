@@ -108,7 +108,8 @@ export async function canUpgradeCli(options: UpgradeOptions = {}): Promise<boole
 }
 
 const defaultRunner: UpgradeRunner = (command, args) => new Promise((resolveRun, reject) => {
-  const child = spawn(command, [...args], { stdio: "inherit", shell: false, windowsHide: true });
+  // Subprocess output is progress; stdout belongs to the parent command's result.
+  const child = spawn(command, [...args], { stdio: ["inherit", process.stderr, process.stderr], shell: false, windowsHide: true });
   child.once("error", reject);
   child.once("exit", (code) => resolveRun(code ?? 1));
 });
