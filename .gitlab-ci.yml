@@ -1,0 +1,29 @@
+# Scheduled in Code Hub only. GitHub remains the source/release authority.
+workflow:
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main" && $CI_COMMIT_REF_PROTECTED == "true" && ($CI_PIPELINE_SOURCE == "schedule" || $CI_PIPELINE_SOURCE == "web")'
+    - when: never
+
+stages: [reconcile]
+
+internal-distribution:
+  stage: reconcile
+  image: node:24-bookworm
+  services:
+    - name: docker:28-dind
+      alias: docker
+      command: ["--tls=false"]
+  variables:
+    DOCKER_HOST: tcp://docker:2375
+    DOCKER_TLS_CERTDIR: ""
+    GIT_DEPTH: "0"
+    INTERNAL_NPM_PACKAGE: '@zuehlkelabs/teams-cli'
+    PROMOTION_SMOKE_IMAGE: node:24-bookworm
+  resource_group: teams-cli-internal-distribution
+  interruptible: false
+  timeout: 30m
+  before_script:
+    - apt-get update -qq && apt-get install -y --no-install-recommends docker.io
+    - npm ci --ignore-scripts --no-audit --no-fund
+  script:
+    - node scripts/internal/run.mjs

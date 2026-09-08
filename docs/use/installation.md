@@ -53,6 +53,8 @@ npm --version
 
 Node.js also publishes signed standalone Linux archives on its download page.
 
+Internal users can use the [internal distribution](internal-distribution.md) after completing the company npm bootstrap.
+
 ## Install teams-cli
 
 Install the command globally:
@@ -75,7 +77,7 @@ Continue with the [quick start](../../README.md#quick-start).
 
 ## Updates and upgrades
 
-At startup, the CLI may launch a detached npm registry check. It runs at most once per hour, does not delay the command, and stores only timestamps, the selected channel, version numbers, and a short public release summary. If a newer version is found, a notice appears on the next invocation.
+At startup, the CLI may launch a detached npm registry check. It runs at most once per hour, does not delay the command, and stores timestamps, package/registry/channel identity, a hash of the npm configuration, version numbers, and an optional release summary. Credentials are never stored in the update cache. If a newer version is found, a notice appears on the next invocation.
 
 Stable installations follow npm's `latest` tag. Switch to builds produced from newly merged pull requests with:
 

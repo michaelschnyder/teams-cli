@@ -53,3 +53,7 @@ The npm command is useful when installing canary for the first time or upgrading
 Repository contributors with write, maintain, or admin permission can run the publish workflow from `main` and enter a repository branch to snapshot. Manual runs are automatically classified as snapshot publications. The workflow verifies that the requested branch and checked-out commit belong to this repository; fork refs and dispatches using a modified branch workflow are not accepted. It publishes an immutable `snapshot` prerelease, associates an npm tag with the selected branch, and prints exact global-install and npx commands in its summary. Canary summaries provide both commands as well.
 
 Snapshots never update automatically and `version --upgrade` refuses to replace them. Testers with a global npm installation can leave a snapshot explicitly with `version --channel stable` or `version --channel canary`; other installation scopes must use their owning package manager.
+
+## Internal distribution
+
+Code Hub promotes verified stable public artifacts through explicit Git synchronization and the shared GitLab pipeline. See [internal release operations](releasing-internal.md) in the source repository. Public publication and version generation remain authoritative.

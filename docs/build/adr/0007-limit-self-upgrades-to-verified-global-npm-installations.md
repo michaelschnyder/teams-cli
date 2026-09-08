@@ -1,6 +1,6 @@
 # ADR 0007: Limit self-upgrades to verified global npm installations
 
-- **Status:** Accepted
+- **Status:** Accepted; package identity and registry handling amended by [ADR 0008](0008-promote-internal-distributions-from-public-artifacts.md)
 - **Date:** 2026-09-04
 - **Decision owners:** Project maintainers
 

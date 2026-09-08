@@ -131,3 +131,7 @@ teams-cli --debug chat search "Project Phoenix" --json
 ```
 
 Debug output is sanitized and written to stderr. It does not include headers, tokens, cookies, query values, request bodies, or conversation and message identifiers.
+
+### Distribution-aware version information
+
+`teams-cli version` identifies the installed npm package and registry when available. JSON output adds a `package` object with `name`, optional `distribution` metadata, and the resolved `registry`; existing build and update fields remain unchanged. Self-upgrades preserve the installed package identity and use npm user/global registry configuration. See [internal distribution](internal-distribution.md).

@@ -1,26 +1,30 @@
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { dirname, join, resolve, win32 } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { promisify } from "node:util";
+import { homedir } from "node:os";
+import semver from "semver";
 import { PACKAGE_NAME } from "./version.js";
+import { npmInvocation, npmExecutor, registryArgs, type NpmInvocation, type NpmDestination } from "./npm.js";
+export { npmInvocation, type NpmInvocation } from "./npm.js";
 
-const execFileAsync = promisify(execFile);
 const PACKAGE_ROOT = dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 
 export type UpgradeRunner = (command: string, args: readonly string[]) => Promise<number>;
 
-export type NpmInvocation = { command: string; args: readonly string[] };
-
-export type UpgradeOptions = {
-  runner?: UpgradeRunner;
+type InstallationOptions = {
   npm?: NpmInvocation;
   globalRoot?: (npm: NpmInvocation) => Promise<string>;
   packageRoot?: string;
   canonicalize?: (path: string) => string;
-  pathExists?: (path: string) => boolean;
   platform?: NodeJS.Platform;
-  targetVersion?: string;
+};
+
+export type UpgradeOptions = Omit<InstallationOptions, "npm"> & {
+  pathExists?: (path: string) => boolean;
+  destination: NpmDestination;
+  targetVersion: string;
+  runner?: UpgradeRunner;
   onInstalled?: () => Promise<void>;
 };
 
@@ -31,27 +35,8 @@ export type GlobalNpmInstallation = {
   installedCli: string;
 };
 
-export function npmInvocation(
-  platform = process.platform,
-  nodeExecutable = process.execPath,
-  npmExecPath: string | null | undefined = process.env.npm_execpath,
-): NpmInvocation {
-  if (npmExecPath) return { command: nodeExecutable, args: [npmExecPath] };
-  if (platform === "win32") {
-    return {
-      command: nodeExecutable,
-      args: [win32.join(win32.dirname(nodeExecutable), "node_modules", "npm", "bin", "npm-cli.js")],
-    };
-  }
-  return { command: "npm", args: [] };
-}
-
 async function defaultGlobalRoot(npm: NpmInvocation): Promise<string> {
-  const { stdout } = await execFileAsync(npm.command, [...npm.args, "root", "--global"], {
-    encoding: "utf8",
-    windowsHide: true,
-  });
-  const root = stdout.trim();
+  const root = await npmExecutor()(npm, ["root", "--global"]);
   if (!root) throw new Error("npm returned no global package root");
   return root;
 }
@@ -61,15 +46,14 @@ function comparablePath(path: string, platform: NodeJS.Platform): string {
   return platform === "win32" ? absolute.toLowerCase() : absolute;
 }
 
-export async function resolveGlobalNpmInstallation(options: UpgradeOptions = {}): Promise<GlobalNpmInstallation> {
+export async function resolveGlobalNpmInstallation(options: InstallationOptions = {}): Promise<GlobalNpmInstallation> {
   const platform = options.platform ?? process.platform;
   const npm = options.npm ?? npmInvocation(platform);
   let globalRoot: string;
   try {
     globalRoot = await (options.globalRoot ?? defaultGlobalRoot)(npm);
-  } catch (error) {
-    const detail = error instanceof Error ? `: ${error.message}` : "";
-    throw new Error(`Cannot verify the npm global installation scope${detail}`);
+  } catch {
+    throw new Error("Cannot verify the npm global installation scope");
   }
 
   const packageRoot = options.packageRoot ?? PACKAGE_ROOT;
@@ -98,7 +82,7 @@ export async function resolveGlobalNpmInstallation(options: UpgradeOptions = {})
   };
 }
 
-export async function canUpgradeCli(options: UpgradeOptions = {}): Promise<boolean> {
+export async function canUpgradeCli(options: InstallationOptions = {}): Promise<boolean> {
   try {
     await resolveGlobalNpmInstallation(options);
     return true;
@@ -107,20 +91,33 @@ export async function canUpgradeCli(options: UpgradeOptions = {}): Promise<boole
   }
 }
 
-const defaultRunner: UpgradeRunner = (command, args) => new Promise((resolveRun, reject) => {
-  const child = spawn(command, [...args], { stdio: "inherit", shell: false, windowsHide: true });
-  child.once("error", reject);
-  child.once("exit", (code) => resolveRun(code ?? 1));
-});
+const defaultRunner: UpgradeRunner = (command, args) =>
+  new Promise((resolveRun, reject) => {
+    const child = spawn(command, [...args], {
+      stdio: ["inherit", process.stderr, process.stderr],
+      shell: false,
+      windowsHide: true,
+      cwd: homedir(),
+      timeout: 180000,
+    });
+    child.once("error", reject);
+    child.once("exit", (code) => resolveRun(code ?? 1));
+  });
 
-export async function upgradeCli(options: UpgradeOptions = {}): Promise<void> {
-  const installation = await resolveGlobalNpmInstallation(options);
+export async function upgradeCli(options: UpgradeOptions): Promise<void> {
+  const { destination, targetVersion } = options;
+  if (semver.valid(targetVersion) !== targetVersion) throw new Error("Upgrade requires an exact version");
+  if (destination.packageName !== PACKAGE_NAME) throw new Error("Upgrade package identity mismatch");
+  const installation = await resolveGlobalNpmInstallation({ ...options, npm: destination.npm });
   const runner = options.runner ?? defaultRunner;
-  const targetVersion = options.targetVersion ?? "latest";
-  const installStatus = await runner(
-    installation.npm.command,
-    [...installation.npm.args, "install", "--global", `${PACKAGE_NAME}@${targetVersion}`],
-  );
+  const installStatus = await runner(installation.npm.command, [
+    ...installation.npm.args,
+    "install",
+    "--global",
+    `${PACKAGE_NAME}@${targetVersion}`,
+    ...registryArgs(PACKAGE_NAME, destination.registry),
+    "--update-notifier=false",
+  ]);
   if (installStatus !== 0) throw new Error(`npm upgrade failed with exit code ${installStatus}`);
 
   if (!(options.pathExists ?? existsSync)(installation.installedCli)) {

@@ -1,3 +1,4 @@
+import { fakeRegistry } from "./registry.js";
 import assert from "node:assert/strict";
 import { Command } from "commander";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -14,9 +15,7 @@ function installedBuild(channel: BuildChannel, version: string): BuildInfo {
   return { schemaVersion: 1, version, channel, trigger: { kind: "local" } };
 }
 
-function manifest(version: string): Response {
-  return new Response(JSON.stringify({ version }), { status: 200, headers: { "content-type": "application/json" } });
-}
+function manifest(version: string) { return { version }; }
 
 test("keeps adaptive version output terse outside a TTY", async () => {
   let output = "";
@@ -72,9 +71,9 @@ test("switches the installed channel and persists it only after installation suc
     registerVersionCommand(program, {
       storageRoot: root,
       environment: {},
-      fetcher: async (input) => String(input).endsWith("/canary")
+      registry: await fakeRegistry(async (input) => input === "canary"
         ? manifest("0.3.0-canary.4.1.gabcdef12")
-        : manifest("0.2.0"),
+        : manifest("0.2.0")),
       upgrader: async (options) => {
         target = options.targetVersion ?? "";
         await options.onInstalled?.();
@@ -98,7 +97,7 @@ test("does not persist a channel when installation fails", async () => {
     registerVersionCommand(program, {
       storageRoot: root,
       environment: {},
-      fetcher: async () => manifest("0.3.0-canary.4.1.gabcdef12"),
+      registry: await fakeRegistry(async () => manifest("0.3.0-canary.4.1.gabcdef12")),
       upgrader: async () => { throw new Error("install failed"); },
       stdout: { write: () => true },
       stderr: { write: () => true },
@@ -120,9 +119,9 @@ test("upgrades a canary installation to the newest effective-channel version", a
       storageRoot: root,
       environment: {},
       buildInfo: installedBuild("canary", "0.2.0-canary.1.1.g11111111"),
-      fetcher: async (input) => String(input).endsWith("/canary")
+      registry: await fakeRegistry(async (input) => input === "canary"
         ? manifest("0.2.0-canary.5.1.g55555555")
-        : manifest("0.1.0"),
+        : manifest("0.1.0")),
       upgrader: async (options) => { target = options.targetVersion ?? ""; },
       stdout: { write: () => true },
       stderr: { write: () => true },
@@ -142,7 +141,7 @@ test("keeps snapshot upgrades pinned while allowing an explicit channel switch",
       storageRoot: root,
       environment: {},
       buildInfo: installedBuild("snapshot", "0.2.0-snapshot.1.1.g11111111"),
-      fetcher: async () => manifest("0.2.0"),
+      registry: await fakeRegistry(async () => manifest("0.2.0")),
       upgrader: async (upgradeOptions: UpgradeOptions) => {
         calls += 1;
         await upgradeOptions.onInstalled?.();
@@ -175,7 +174,7 @@ test("offers an interactive upgrade only for a verified global npm installation"
       storageRoot: root,
       environment: {},
       buildInfo: installedBuild("stable", "0.1.0"),
-      fetcher: async () => manifest("0.2.0"),
+      registry: await fakeRegistry(async () => manifest("0.2.0")),
       canUpgrade: async () => true,
       confirm: async () => {
         confirmations += 1;
@@ -194,7 +193,7 @@ test("offers an interactive upgrade only for a verified global npm installation"
       storageRoot: root,
       environment: {},
       buildInfo: installedBuild("stable", "0.1.0"),
-      fetcher: async () => manifest("0.2.0"),
+      registry: await fakeRegistry(async () => manifest("0.2.0")),
       canUpgrade: async () => false,
       confirm: async () => {
         confirmations += 1;

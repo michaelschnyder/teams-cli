@@ -16,6 +16,12 @@ const globalRoot = join(tmpdir(), "teams-cli-global", "node_modules");
 const packageRoot = join(globalRoot, "@michaelschnyder", "teams-cli");
 const scopeOptions = {
   npm,
+  destination: {
+    packageName: "@michaelschnyder/teams-cli",
+    registry: "https://registry.npmjs.org/",
+    npm,
+  },
+  targetVersion: "0.2.0",
   globalRoot: async () => globalRoot,
   packageRoot,
   canonicalize: resolve,
@@ -47,11 +53,20 @@ test("installs an exact version without a shell and invokes the newly installed 
     targetVersion: "0.2.0-canary.12.1.gabcdef12",
     runner,
     pathExists: () => true,
-    onInstalled: async () => { installed = true; },
+    onInstalled: async () => {
+      installed = true;
+    },
   });
   assert.deepEqual(calls[0], {
     command: npm.command,
-    args: [...npm.args, "install", "--global", "@michaelschnyder/teams-cli@0.2.0-canary.12.1.gabcdef12"],
+    args: [
+      ...npm.args,
+      "install",
+      "--global",
+      "@michaelschnyder/teams-cli@0.2.0-canary.12.1.gabcdef12",
+      "--@michaelschnyder:registry=https://registry.npmjs.org/",
+      "--update-notifier=false",
+    ],
   });
   assert.equal(installed, true);
   assert.equal(calls[1]?.command, process.execPath);
@@ -93,7 +108,9 @@ test("does not persist or refresh skills after a failed npm upgrade", async () =
         return 7;
       },
       pathExists: () => true,
-      onInstalled: async () => { installed = true; },
+      onInstalled: async () => {
+        installed = true;
+      },
     }),
     /npm upgrade failed with exit code 7/,
   );
@@ -114,4 +131,15 @@ test("reports an upgraded package with a failed skill refresh as a partial failu
     }),
     /CLI was upgraded, but skill reinstallation failed with exit code 9/,
   );
+});
+
+test("rejects a mutable version selector before invoking npm", async () => {
+  let calls = 0;
+  await assert.rejects(upgradeCli({
+    ...scopeOptions,
+    targetVersion: "latest",
+    runner: async () => { calls++; return 0; },
+    pathExists: () => true,
+  }), /exact version/);
+  assert.equal(calls, 0);
 });

@@ -75,5 +75,5 @@ jobs:
           done
       - name: Validate package contents
         run: npm run package:check
-      - name: Smoke-test installed package
-        run: npm run package:smoke
+      - name: Smoke-test both package distributions
+        run: npm run package:distributions

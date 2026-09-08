@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { spawn } from "node:child_process";
 import { homedir } from "node:os";
@@ -6,16 +6,20 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import semver from "semver";
 import type { UpdateChannel } from "./settings.js";
-import { PACKAGE_NAME, type BuildChannel } from "./version.js";
+import { DISTRIBUTION, PACKAGE_NAME, type BuildChannel } from "./version.js";
+
+import { configurationKey, resolveRegistry, type RegistryClient } from "./npm.js";
 
 export const UPDATE_INTERVAL_MS = 60 * 60 * 1000;
-const UPDATE_TIMEOUT_MS = 3_000;
-
 export type ReleaseSummary = { title: string; summary?: string; url?: string };
 export type UpdateCandidate = { version: string; summary?: ReleaseSummary };
 
 export type UpdateState = {
-  version: 2;
+  version: 3;
+  packageName: string;
+  registry: string;
+  configFiles: string[];
+  configurationKey: string;
   channel: UpdateChannel;
   checkedAt: string;
   latestVersion?: string;
@@ -28,8 +32,15 @@ type RegistryManifest = {
   teamsCli?: { releaseSummary?: unknown };
 };
 
-export function updateStateFile(storageRoot = join(homedir(), ".teams-cli")): string {
-  return join(storageRoot, "update-check.json");
+export function updateStateFile(
+  storageRoot = join(homedir(), ".teams-cli"),
+  channel: UpdateChannel = "stable",
+): string {
+  const identity = createHash("sha256")
+    .update(JSON.stringify([PACKAGE_NAME, DISTRIBUTION?.registry, channel]))
+    .digest("hex")
+    .slice(0, 16);
+  return join(storageRoot, `update-check-${identity}.json`);
 }
 
 export function isNpxExecution(environment: NodeJS.ProcessEnv = process.env): boolean {
@@ -38,8 +49,13 @@ export function isNpxExecution(environment: NodeJS.ProcessEnv = process.env): bo
 
 export function updateChecksDisabled(environment: NodeJS.ProcessEnv = process.env): boolean {
   const enabled = (value: string | undefined) => value === "1" || value?.toLowerCase() === "true";
-  return enabled(environment.NO_UPDATE_NOTIFIER) || enabled(environment.TEAMS_CLI_DISABLE_UPDATE_CHECK) ||
-    enabled(environment.CI) || enabled(environment.TEAMS_CLI_UPDATE_WORKER) || isNpxExecution(environment);
+  return (
+    enabled(environment.NO_UPDATE_NOTIFIER) ||
+    enabled(environment.TEAMS_CLI_DISABLE_UPDATE_CHECK) ||
+    enabled(environment.CI) ||
+    enabled(environment.TEAMS_CLI_UPDATE_WORKER) ||
+    isNpxExecution(environment)
+  );
 }
 
 function parseReleaseSummary(value: unknown): ReleaseSummary | undefined {
@@ -68,16 +84,18 @@ export async function loadUpdateState(file = updateStateFile()): Promise<UpdateS
     if (typeof candidate.checkedAt !== "string") return null;
     if (candidate.latestVersion !== undefined && typeof candidate.latestVersion !== "string") return null;
     if (candidate.pendingVersion !== undefined && typeof candidate.pendingVersion !== "string") return null;
-    if (candidate.version === 1) {
-      return {
-        version: 2,
-        channel: "stable",
-        checkedAt: candidate.checkedAt,
-        ...(candidate.latestVersion ? { latestVersion: candidate.latestVersion } : {}),
-        ...(candidate.pendingVersion ? { pendingVersion: candidate.pendingVersion } : {}),
-      };
-    }
-    if (candidate.version !== 2 || (candidate.channel !== "stable" && candidate.channel !== "canary")) return null;
+    const identity = parsed as UpdateState;
+    if (
+      candidate.version !== 3 ||
+      (candidate.channel !== "stable" && candidate.channel !== "canary") ||
+      identity.packageName !== PACKAGE_NAME ||
+      typeof identity.registry !== "string" ||
+      typeof identity.configurationKey !== "string" ||
+      !Array.isArray(identity.configFiles) ||
+      identity.configFiles.length > 4 ||
+      !identity.configFiles.every((p) => typeof p === "string")
+    )
+      return null;
     const pendingSummary = parseReleaseSummary(candidate.pendingSummary);
     return { ...candidate, ...(pendingSummary ? { pendingSummary } : {}) } as UpdateState;
   } catch {
@@ -98,29 +116,24 @@ export function isNewerVersion(current: string, candidate: string): boolean {
   return Boolean(semver.valid(current) && semver.valid(candidate) && semver.gt(candidate, current));
 }
 
-async function registryManifest(tag: string, fetcher: typeof fetch): Promise<UpdateCandidate | null> {
-  const response = await fetcher(`https://registry.npmjs.org/${encodeURIComponent(PACKAGE_NAME)}/${tag}`, {
-    headers: { accept: "application/json" },
-    signal: AbortSignal.timeout(UPDATE_TIMEOUT_MS),
-  });
-  if (response.status === 404 && tag === "canary") return null;
-  if (!response.ok) throw new Error(`npm registry returned ${response.status}`);
-  const manifest = await response.json() as RegistryManifest;
-  if (typeof manifest.version !== "string" || !semver.valid(manifest.version)) {
+async function registryManifest(tag: string, registry: RegistryClient): Promise<UpdateCandidate | null> {
+  const manifest = (await registry.manifest(tag)) as RegistryManifest | null;
+  if (manifest === null && tag === "canary") return null;
+  if (!manifest || typeof manifest.version !== "string" || !semver.valid(manifest.version)) {
     throw new Error("npm registry returned no valid version");
   }
   const summary = parseReleaseSummary(manifest.teamsCli?.releaseSummary);
   return { version: manifest.version, ...(summary ? { summary } : {}) };
 }
 
-export async function latestForChannel(channel: UpdateChannel, fetcher: typeof fetch = fetch): Promise<UpdateCandidate> {
-  const stablePromise = registryManifest("latest", fetcher);
+export async function latestForChannel(channel: UpdateChannel, registry: RegistryClient): Promise<UpdateCandidate> {
+  const stablePromise = registryManifest("latest", registry);
   if (channel === "stable") {
     const stable = await stablePromise;
     if (!stable) throw new Error("npm registry has no stable release");
     return stable;
   }
-  const [stable, canary] = await Promise.all([stablePromise, registryManifest("canary", fetcher)]);
+  const [stable, canary] = await Promise.all([stablePromise, registryManifest("canary", registry)]);
   if (!stable && !canary) throw new Error("npm registry has no release for the canary channel");
   if (!stable) return canary as UpdateCandidate;
   if (!canary) return stable;
@@ -130,22 +143,54 @@ export async function latestForChannel(channel: UpdateChannel, fetcher: typeof f
 export async function checkForUpdate(
   currentVersion: string,
   channel: UpdateChannel,
-  fetcher: typeof fetch = fetch,
+  registry: RegistryClient,
 ): Promise<UpdateCandidate | null> {
-  const candidate = await latestForChannel(channel, fetcher);
+  const candidate = await latestForChannel(channel, registry);
   return isNewerVersion(currentVersion, candidate.version) ? candidate : null;
 }
 
 export async function runUpdateWorker(
   currentVersion: string,
-  file = updateStateFile(),
-  fetcher: typeof fetch = fetch,
+  file: string | undefined = undefined,
+  client?: RegistryClient,
   now = new Date(),
   channel: UpdateChannel = "stable",
 ): Promise<void> {
-  const next: UpdateState = { version: 2, channel, checkedAt: now.toISOString() };
+  file ??= updateStateFile(undefined, channel);
+  let registry: RegistryClient;
   try {
-    const candidate = await latestForChannel(channel, fetcher);
+    registry = client ?? await resolveRegistry();
+  } catch {
+    const previous = await loadUpdateState(file);
+    const configFiles = previous?.configFiles ?? [
+      process.env.npm_config_userconfig ?? join(homedir(), ".npmrc"),
+      ...(process.env.npm_config_globalconfig ? [process.env.npm_config_globalconfig] : []),
+    ];
+    await saveUpdateState(
+      {
+        version: 3,
+        packageName: PACKAGE_NAME,
+        registry: DISTRIBUTION?.registry ?? "",
+        channel,
+        configFiles,
+        configurationKey: await configurationKey(configFiles),
+        checkedAt: now.toISOString(),
+      },
+      file,
+    );
+    return;
+  }
+  const next: UpdateState = {
+    version: 3,
+    packageName: registry.packageName,
+    registry: registry.registry,
+    configFiles: registry.configFiles,
+    configurationKey: registry.configurationKey,
+    channel,
+    checkedAt: now.toISOString(),
+  };
+  try {
+    const candidate = await latestForChannel(channel, registry);
     next.latestVersion = candidate.version;
     if (isNewerVersion(currentVersion, candidate.version)) {
       next.pendingVersion = candidate.version;
@@ -170,13 +215,24 @@ export async function prepareUpdateNotification(options: {
   const environment = options.environment ?? process.env;
   if (options.installedChannel === "snapshot" || updateChecksDisabled(environment)) return;
   const channel = options.channel ?? "stable";
-  const file = options.stateFile ?? updateStateFile();
-  const state = await loadUpdateState(file);
-  if (state && state.channel === channel && state.pendingVersion && isNewerVersion(options.currentVersion, state.pendingVersion)) {
+  const file = options.stateFile ?? updateStateFile(undefined, channel);
+  const cached = await loadUpdateState(file);
+  const state =
+    cached &&
+    cached.configurationKey === (await configurationKey(cached.configFiles, environment)) &&
+    (!DISTRIBUTION || cached.registry === DISTRIBUTION.registry)
+      ? cached
+      : null;
+  if (
+    state &&
+    state.channel === channel &&
+    state.pendingVersion &&
+    isNewerVersion(options.currentVersion, state.pendingVersion)
+  ) {
     const description = state.pendingSummary?.title ? ` ${state.pendingSummary.title}.` : "";
     (options.stderr ?? process.stderr).write(
       `A new teams-cli ${channel} version is available: ${options.currentVersion} → ${state.pendingVersion}.${description} ` +
-      `For a global npm installation, run \`teams-cli version --upgrade\`. Otherwise update through the package manager and installation scope that installed it, targeting ${PACKAGE_NAME}@${state.pendingVersion}.\n`,
+        `For a global npm installation, run \`teams-cli version --upgrade\`. Otherwise update through the package manager and installation scope that installed it, targeting ${PACKAGE_NAME}@${state.pendingVersion}.\n`,
     );
     const consumed = { ...state };
     delete consumed.pendingVersion;
@@ -195,12 +251,16 @@ export async function prepareUpdateNotification(options: {
     return;
   }
   const entrypoint = fileURLToPath(new URL("./cli.js", import.meta.url));
-  const child = spawn(process.execPath, [entrypoint, "--internal-update-check", options.currentVersion, file, channel], {
-    detached: true,
-    stdio: "ignore",
-    windowsHide: true,
-    env: { ...environment, TEAMS_CLI_UPDATE_WORKER: "1" },
-  });
+  const child = spawn(
+    process.execPath,
+    [entrypoint, "--internal-update-check", options.currentVersion, file, channel],
+    {
+      detached: true,
+      stdio: "ignore",
+      windowsHide: true,
+      env: { ...environment, TEAMS_CLI_UPDATE_WORKER: "1" },
+    },
+  );
   child.on("error", () => undefined);
   child.unref();
 }

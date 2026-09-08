@@ -1,16 +1,23 @@
+import { resolveRegistry, type RegistryClient } from "../npm.js";
 import type { Command } from "commander";
 import { Option } from "commander";
 import { stripVTControlCharacters } from "node:util";
 import { storagePaths } from "../storage.js";
 import { resolveUpdateChannel, saveUpdateChannel, type UpdateChannel } from "../settings.js";
-import { checkForUpdate, isNpxExecution, latestForChannel, updateChecksDisabled, type UpdateCandidate } from "../update.js";
+import {
+  checkForUpdate,
+  isNpxExecution,
+  latestForChannel,
+  updateChecksDisabled,
+  type UpdateCandidate,
+} from "../update.js";
 import { canUpgradeCli, upgradeCli } from "../upgrade.js";
-import { BUILD_INFO, CLI_VERSION, PACKAGE_NAME, type BuildInfo } from "../version.js";
+import { BUILD_INFO, CLI_VERSION, PACKAGE_NAME, DISTRIBUTION, type BuildInfo } from "../version.js";
 
 export type VersionCommandOptions = {
   storageRoot?: string;
   confirm?: (question: string) => Promise<boolean>;
-  fetcher?: typeof fetch;
+  registry?: RegistryClient;
   environment?: NodeJS.ProcessEnv;
   stdout?: Pick<NodeJS.WriteStream, "write"> & { isTTY?: boolean };
   stderr?: Pick<NodeJS.WriteStream, "write"> & { isTTY?: boolean };
@@ -31,6 +38,11 @@ export function renderVersion(
 ): string {
   const lines = [
     `Version: ${info.version}`,
+    `Package: ${PACKAGE_NAME}`,
+    ...(DISTRIBUTION ? [
+      `Registry: ${safe(DISTRIBUTION.registry)}`,
+      `Upstream: ${DISTRIBUTION.upstream.name}@${DISTRIBUTION.upstream.version}`,
+    ] : []),
     `Build channel: ${info.channel}`,
     `Update channel: ${channel}`,
   ];
@@ -64,10 +76,12 @@ export function renderVersion(
   return `${lines.join("\n")}\n`;
 }
 
-async function versionDetails(options: VersionCommandOptions & {
-  json?: boolean;
-  allowPrompt?: boolean;
-}): Promise<void> {
+async function versionDetails(
+  options: VersionCommandOptions & {
+    json?: boolean;
+    allowPrompt?: boolean;
+  },
+): Promise<void> {
   const environment = options.environment ?? process.env;
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
@@ -76,30 +90,40 @@ async function versionDetails(options: VersionCommandOptions & {
   const channel = await resolveUpdateChannel({ paths, environment, installedChannel: buildInfo.channel });
   const npx = isNpxExecution(environment);
   let candidate: UpdateCandidate | null = null;
+  let registry: RegistryClient | undefined;
   let updateStatus: "available" | "current" | "pinned" | "npx" | "disabled" | "unavailable" = "current";
   if (buildInfo.channel === "snapshot") updateStatus = "pinned";
   else if (npx) updateStatus = "npx";
   else if (updateChecksDisabled(environment)) updateStatus = "disabled";
   else {
     try {
-      candidate = await checkForUpdate(buildInfo.version, channel, options.fetcher);
+      registry = options.registry ?? await resolveRegistry({ environment });
+      candidate = await checkForUpdate(buildInfo.version, channel, registry);
       updateStatus = candidate ? "available" : "current";
     } catch {
       updateStatus = "unavailable";
     }
   }
   if (options.json) {
-    stdout.write(`${JSON.stringify({ installed: buildInfo, updateChannel: channel, update: { status: updateStatus, candidate } }, null, 2)}\n`);
+    stdout.write(
+      `${JSON.stringify({ installed: buildInfo, package: { name: PACKAGE_NAME, distribution: DISTRIBUTION ?? null, registry: registry?.registry ?? DISTRIBUTION?.registry ?? null }, updateChannel: channel, update: { status: updateStatus, candidate } }, null, 2)}\n`,
+    );
     return;
   }
   stdout.write(renderVersion(buildInfo, channel, candidate, updateStatus));
+  if (registry && !DISTRIBUTION) stdout.write(`Registry: ${safe(registry.registry)}\n`);
   if (updateStatus === "pinned") stderr.write("Snapshot builds are pinned. Replace this build explicitly through your package manager to leave the snapshot.\n");
   if (updateStatus === "npx") stderr.write("This temporary npx execution manages its version through the package spec, not the CLI updater.\n");
   if (updateStatus === "unavailable") stderr.write("The npm registry could not be checked; installed build information is still complete.\n");
-  if (candidate && options.allowPrompt && options.confirm && await (options.canUpgrade ?? canUpgradeCli)() &&
-    await options.confirm(`Install teams-cli ${candidate.version}?`)) {
+  if (
+    candidate && registry &&
+    options.allowPrompt &&
+    options.confirm &&
+    (await (options.canUpgrade ?? canUpgradeCli)()) &&
+    (await options.confirm(`Install teams-cli ${candidate.version}?`))
+  ) {
     stderr.write(`Upgrading teams-cli to ${candidate.version} through npm…\n`);
-    await (options.upgrader ?? upgradeCli)({ targetVersion: candidate.version });
+    await (options.upgrader ?? upgradeCli)({ targetVersion: candidate.version, destination: registry });
     stdout.write("teams-cli and recorded skill installations are up to date.\n");
   }
 }
@@ -112,10 +136,12 @@ async function changeChannel(channel: UpdateChannel, options: VersionCommandOpti
     );
   }
   const paths = storagePaths(options.storageRoot);
-  const candidate = await latestForChannel(channel, options.fetcher);
+  const registry = options.registry ?? await resolveRegistry({ environment });
+  const candidate = await latestForChannel(channel, registry);
   (options.stderr ?? process.stderr).write(`Switching teams-cli to ${channel} (${candidate.version})…\n`);
   await (options.upgrader ?? upgradeCli)({
     targetVersion: candidate.version,
+    destination: registry,
     onInstalled: () => saveUpdateChannel(paths, channel),
   });
   (options.stdout ?? process.stdout).write(`teams-cli now follows the ${channel} channel at ${candidate.version}.\n`);
@@ -130,13 +156,16 @@ async function upgradeCurrent(options: VersionCommandOptions): Promise<void> {
   }
   const buildInfo = options.buildInfo ?? BUILD_INFO;
   if (buildInfo.channel === "snapshot") {
-    throw new Error("Snapshot builds are pinned. Use `teams-cli version --channel stable` or `--channel canary` to leave this snapshot.");
+    throw new Error(
+      "Snapshot builds are pinned. Use `teams-cli version --channel stable` or `--channel canary` to leave this snapshot.",
+    );
   }
   const paths = storagePaths(options.storageRoot);
   const channel = await resolveUpdateChannel({ paths, environment, installedChannel: buildInfo.channel });
-  const candidate = await latestForChannel(channel, options.fetcher);
+  const registry = options.registry ?? await resolveRegistry({ environment });
+  const candidate = await latestForChannel(channel, registry);
   (options.stderr ?? process.stderr).write(`Upgrading teams-cli on ${channel} to ${candidate.version}…\n`);
-  await (options.upgrader ?? upgradeCli)({ targetVersion: candidate.version });
+  await (options.upgrader ?? upgradeCli)({ targetVersion: candidate.version, destination: registry });
   (options.stdout ?? process.stdout).write("teams-cli and recorded skill installations are up to date.\n");
 }
 

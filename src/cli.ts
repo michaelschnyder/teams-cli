@@ -91,6 +91,7 @@ import {
   type SkillsCommandOptions,
 } from "./commands/skills.js";
 import { registerDoctorCommand } from "./commands/doctor.js";
+import type { RegistryClient } from "./npm.js";
 import { registerVersionCommand, showAdaptiveVersion } from "./commands/version.js";
 import { prepareUpdateNotification, runUpdateWorker } from "./update.js";
 import { resolveUpdateChannel } from "./settings.js";
@@ -107,7 +108,7 @@ export type ProgramOptions = {
   subjectPath?: string;
   confirm?: ConfirmPrompt;
   loginImplementation?: LoginImplementation;
-  fetcher?: typeof fetch;
+  registry?: RegistryClient;
   environment?: NodeJS.ProcessEnv;
   detectCowork?: () => Promise<boolean>;
 };
@@ -671,7 +672,7 @@ export function createProgram(options: ProgramOptions = {}): Command {
   const versionOptions = {
     ...(options.storageRoot ? { storageRoot: options.storageRoot } : {}),
     confirm: interactiveAuth.confirm,
-    ...(options.fetcher ? { fetcher: options.fetcher } : {}),
+    ...(options.registry ? { registry: options.registry } : {}),
     ...(options.environment ? { environment: options.environment } : {}),
   };
   const isolatedSkillRoot = options.storageRoot ? dirname(options.storageRoot) : undefined;
@@ -1167,7 +1168,7 @@ if (entrypoint && realpathSync(entrypoint) === realpathSync(fileURLToPath(import
       const file = process.argv[4];
       const channel = process.argv[5];
       if (currentVersion && file && (channel === "stable" || channel === "canary")) {
-        await runUpdateWorker(currentVersion, file, fetch, new Date(), channel);
+        await runUpdateWorker(currentVersion, file, undefined, new Date(), channel);
       }
       return;
     }

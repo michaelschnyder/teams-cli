@@ -1,41 +1,13 @@
-import { execFileSync } from "node:child_process";
-import { readFileSync, rmSync } from "node:fs";
-import { basename, join } from "node:path";
+import { mkdtemp, rm } from "node:fs/promises";
+import { resolve, join, basename } from "node:path";
 import { tmpdir } from "node:os";
+import { extractArtifact, packArtifact } from "./package-artifact.mjs";
 
-if (!process.env.npm_execpath) throw new Error("Run package validation through npm");
-const output = execFileSync(process.execPath, [process.env.npm_execpath, "pack", "--json", "--ignore-scripts"], {
-  encoding: "utf8",
-  env: { ...process.env, npm_config_cache: join(tmpdir(), "teams-cli-package-check-cache") },
-});
-const parsed = JSON.parse(output);
-const { filename, files } = Array.isArray(parsed) ? parsed[0] : Object.values(parsed)[0];
+const temporary = await mkdtemp(join(tmpdir(), "teams-package-check-"));
 try {
-  const paths = files.map(({ path }) => path);
-  const rootFiles = new Set(["package.json", "README.md", "SECURITY.md", "LICENSE"]);
-  const unexpected = paths.filter((path) => !rootFiles.has(path) && !path.startsWith("dist/") &&
-    !path.startsWith("docs/use/") && path !== "docs/releasing.md");
-  if (unexpected.length) throw new Error(`Unexpected package files: ${unexpected.join(", ")}`);
-  for (const required of [
-    "package.json",
-    "README.md",
-    "LICENSE",
-    "dist/cli.js",
-    "dist/build-info.json",
-    "dist/skills/teams-cli/SKILL.md",
-    "dist/skills/teams-cli/claude-cowork.md",
-    "docs/use/assets/policy-editor.png",
-    "docs/releasing.md",
-  ]) {
-    if (!paths.includes(required)) throw new Error(`Package is missing ${required}`);
-  }
-  const cli = files.find(({ path }) => path === "dist/cli.js");
-  if (!cli || (process.platform !== "win32" && (cli.mode & 0o111) === 0)) {
-    throw new Error("dist/cli.js is not executable");
-  }
-  const firstLine = readFileSync(join(process.cwd(), "dist", "cli.js"), "utf8").split("\n", 1)[0];
-  if (firstLine !== "#!/usr/bin/env node") throw new Error("dist/cli.js has no Node shebang");
-  process.stdout.write(`Validated ${basename(filename)} with ${files.length} files.\n`);
+  const file = process.argv[2] ? resolve(process.argv[2]) : packArtifact(temporary);
+  const result = await extractArtifact(file, join(temporary, "extracted"));
+  process.stdout.write(`Validated ${basename(file)} with ${result.files.size} files.\n`);
 } finally {
-  rmSync(join(process.cwd(), filename), { force: true });
+  await rm(temporary, { recursive: true, force: true });
 }

@@ -44,7 +44,50 @@ type PackageMetadata = {
   name?: unknown;
   version?: unknown;
   repository?: unknown;
+  teamsCli?: { distribution?: unknown };
 };
+
+export type Distribution = {
+  schemaVersion: 1;
+  registry: string;
+  upstream: { name: string; version: string; integrity: string };
+  transformationRevision: string;
+};
+
+export function parseDistribution(value: unknown): Distribution | undefined {
+  if (value === undefined) return undefined;
+  const d = value as Distribution;
+  if (
+    !d ||
+    d.schemaVersion !== 1 ||
+    typeof d.registry !== "string" ||
+    !d.upstream ||
+    typeof d.upstream.name !== "string" ||
+    typeof d.upstream.version !== "string" ||
+    typeof d.upstream.integrity !== "string" ||
+    typeof d.transformationRevision !== "string"
+  ) {
+    throw new Error("Installed distribution metadata is invalid");
+  }
+  let registry: URL;
+  try {
+    registry = new URL(d.registry);
+  } catch {
+    throw new Error("Installed distribution registry is invalid");
+  }
+  if (
+    registry.protocol !== "https:" ||
+    registry.username ||
+    registry.password ||
+    registry.search ||
+    registry.hash ||
+    !/^@[a-z0-9._-]+\/[a-z0-9._-]+$/.test(d.upstream.name) ||
+    !/^sha512-[A-Za-z0-9+/]+={0,2}$/.test(d.upstream.integrity)
+  ) {
+    throw new Error("Installed distribution metadata is invalid");
+  }
+  return { ...d, registry: `${registry.href.replace(/\/+$/, "")}/` };
+}
 
 const metadata = createRequire(import.meta.url)("../package.json") as PackageMetadata;
 
@@ -115,6 +158,7 @@ function loadBuildInfo(): BuildInfo {
 }
 
 export const PACKAGE_NAME = packageName;
+export const DISTRIBUTION = parseDistribution(metadata.teamsCli?.distribution);
 export const CLI_VERSION = cliVersion;
 export const PACKAGE_REPOSITORY_URL = repositoryUrl(metadata.repository);
 export const BUILD_INFO = loadBuildInfo();

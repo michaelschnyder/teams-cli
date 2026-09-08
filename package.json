@@ -12,19 +12,22 @@
     "docs/releasing.md",
     "README.md",
     "SECURITY.md",
-    "LICENSE"
+    "LICENSE",
+    "docs/releasing-internal.md"
   ],
   "scripts": {
     "dev": "tsx src/cli.ts",
     "clean": "node scripts/clean.mjs",
     "build": "npm run clean && tsc && node scripts/write-build-info.mjs && node scripts/copy-skills.mjs && node scripts/sync-skill-versions.mjs && node scripts/make-executable.mjs",
-    "check": "tsc --noEmit",
+    "check": "tsc --noEmit && tsc --project tsconfig.promotion.json",
     "test": "node --import tsx --test test/**/*.test.ts",
     "test:e2e": "node --import tsx --test test/e2e/*.e2e.ts",
     "test:live": "npm run test:e2e",
     "prepack": "npm run build",
     "package:check": "node scripts/check-package.mjs",
-    "package:smoke": "node scripts/smoke-package.mjs"
+    "package:smoke": "node scripts/smoke-package.mjs",
+    "package:distributions": "node scripts/check-distributions.mjs",
+    "internal:reconcile": "node scripts/internal/run.mjs"
   },
   "keywords": [
     "microsoft-teams",
@@ -59,6 +62,8 @@
     "@types/node": "^24.13.3",
     "@types/semver": "^7.8.0",
     "@types/ws": "^8.18.1",
+    "sigstore": "^5.0.0",
+    "tar": "^7.5.22",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2"
   },

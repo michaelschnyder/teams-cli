@@ -1,3 +1,4 @@
+import { fakeRegistry } from "./registry.js";
 import assert from "node:assert/strict";
 import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -81,7 +82,7 @@ test("keeps piped --version terse and provides structured version metadata", asy
     await createProgram({
       storageRoot: root,
       environment: {},
-      fetcher: async () => new Response(JSON.stringify({ version: "0.2.0" }), { status: 200 }),
+      registry: await fakeRegistry(async () => ({ version: "0.2.0" })),
     }).parseAsync(["node", "teams-cli", "version", "--json"]);
     const output = JSON.parse(stdout) as { installed: { version: string; channel: string }; update: { status: string } };
     assert.equal(output.installed.version, "0.2.0");
