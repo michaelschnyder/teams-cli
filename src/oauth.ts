@@ -54,12 +54,20 @@ export function createInitialTokenUrl(tenant = "organizations"): string {
   return createResourceTokenUrl(SKYPE_RESOURCE, tenant);
 }
 
+// Tenants on Microsoft's new Teams domain redirect teams.microsoft.com/go to
+// teams.cloud.microsoft, and the fragment with the OAuth result survives the
+// redirect. Accept both origins and rely on the fragment rather than the path.
+const TEAMS_REDIRECT_ORIGINS = new Set(["https://teams.microsoft.com", "https://teams.cloud.microsoft"]);
+
 export function tokenFromRedirect(urlString: string): string | undefined {
   const url = new URL(urlString);
-  if (url.origin !== "https://teams.microsoft.com" || url.pathname !== "/go") {
+  if (!TEAMS_REDIRECT_ORIGINS.has(url.origin)) {
     return undefined;
   }
   const params = new URLSearchParams(url.hash.slice(1));
+  if (!params.has("access_token") && !params.has("error")) {
+    return undefined;
+  }
   const error = params.get("error");
   if (error) {
     throw new OAuthRedirectError(error, params.get("error_description") ?? error);

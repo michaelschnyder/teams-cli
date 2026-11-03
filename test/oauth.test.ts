@@ -41,6 +41,20 @@ test("extracts only an access token from the expected callback", () => {
   assert.equal(tokenFromRedirect("https://example.com/go#access_token=secret"), undefined);
 });
 
+test("accepts the callback after a redirect to teams.cloud.microsoft", () => {
+  assert.equal(
+    tokenFromRedirect("https://teams.cloud.microsoft/go#access_token=secret&token_type=Bearer"),
+    "secret",
+  );
+  assert.equal(tokenFromRedirect("https://teams.cloud.microsoft/v2/#access_token=secret"), "secret");
+  assert.equal(tokenFromRedirect("https://teams.cloud.microsoft/v2/"), undefined);
+  assert.equal(tokenFromRedirect("https://teams.microsoft.com/v2/"), undefined);
+  assert.throws(
+    () => tokenFromRedirect("https://teams.cloud.microsoft/go#error=login_required&error_description=Sign%20in"),
+    /Sign in/,
+  );
+});
+
 test("submits Microsoft username and password forms by clicking their controls", async () => {
   const actions: string[] = [];
   const input = (name: string) => ({
